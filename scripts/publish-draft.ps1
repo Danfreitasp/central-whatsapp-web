@@ -8,7 +8,13 @@ $metadataPath = 'dist/latest.yml'
 
 gh auth status | Out-Null
 
-if ((gh release view $releaseTag --repo $updateRepository 2>$null)) {
+$previousErrorPreference = $ErrorActionPreference
+$ErrorActionPreference = 'SilentlyContinue'
+gh release view $releaseTag --repo $updateRepository *> $null
+$releaseAlreadyExists = $LASTEXITCODE -eq 0
+$ErrorActionPreference = $previousErrorPreference
+
+if ($releaseAlreadyExists) {
   throw "A release $releaseTag já existe em $updateRepository."
 }
 

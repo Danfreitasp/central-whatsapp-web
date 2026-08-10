@@ -83,15 +83,18 @@ function createAppUpdater({ autoUpdater, app, dialog, getWindow, hasActiveDispat
     try {
       await autoUpdater.downloadUpdate();
     } catch (error) {
+      const shouldNotify = downloadRequested;
       downloadRequested = false;
       setProgress(-1);
       logger.error('[Central WhatsApp] Falha ao baixar atualização:', error);
-      await showMessage({
-        type: 'error',
-        title: 'Não foi possível baixar a atualização',
-        message: error?.message || String(error),
-        buttons: ['Fechar']
-      });
+      if (shouldNotify) {
+        await showMessage({
+          type: 'error',
+          title: 'Não foi possível baixar a atualização',
+          message: error?.message || String(error),
+          buttons: ['Fechar']
+        });
+      }
     }
   });
 
@@ -119,7 +122,8 @@ function createAppUpdater({ autoUpdater, app, dialog, getWindow, hasActiveDispat
   });
 
   autoUpdater.on('error', async (error) => {
-    const shouldNotify = manualCheck || downloadRequested;
+    const wasDownloading = downloadRequested;
+    const shouldNotify = manualCheck || wasDownloading;
     manualCheck = false;
     downloadRequested = false;
     setProgress(-1);
@@ -127,7 +131,7 @@ function createAppUpdater({ autoUpdater, app, dialog, getWindow, hasActiveDispat
     if (!shouldNotify) return;
     await showMessage({
       type: 'error',
-      title: 'Não foi possível verificar atualizações',
+      title: wasDownloading ? 'Não foi possível baixar a atualização' : 'Não foi possível verificar atualizações',
       message: error?.message || String(error),
       buttons: ['Fechar']
     });
@@ -196,4 +200,3 @@ module.exports = {
   PERIODIC_CHECK_INTERVAL_MS,
   createAppUpdater
 };
-
