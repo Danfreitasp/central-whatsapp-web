@@ -1,6 +1,12 @@
 const STARTUP_CHECK_DELAY_MS = 15_000;
 const PERIODIC_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
+function isNoPublishedReleaseError(error) {
+  const message = String(error?.message || error || '');
+  return /no published (?:versions?|releases?) on github/i.test(message)
+    || /unable to find latest version on github/i.test(message);
+}
+
 function createAppUpdater({ autoUpdater, app, dialog, getWindow, hasActiveDispatches, logger = console }) {
   let startupTimer = null;
   let periodicTimer = null;
@@ -9,6 +15,7 @@ function createAppUpdater({ autoUpdater, app, dialog, getWindow, hasActiveDispat
   let downloadedUpdate = null;
   let waitingForDispatches = false;
   let installPromptOpen = false;
+  let noPublishedNoticeHandled = false;
 
   autoUpdater.autoDownload = false;
   autoUpdater.autoInstallOnAppQuit = false;
@@ -28,6 +35,16 @@ function createAppUpdater({ autoUpdater, app, dialog, getWindow, hasActiveDispat
   function setProgress(value) {
     const target = currentWindow();
     if (target?.setProgressBar) target.setProgressBar(value);
+  }
+
+  function showAlreadyUpToDate() {
+    return showMessage({
+      type: 'info',
+      title: 'Central WhatsApp Web',
+      message: 'Você já está usando a versão mais recente.',
+      detail: 'Ainda não existe uma versão estável mais nova publicada.',
+      buttons: ['OK']
+    });
   }
 
   async function promptInstall() {
@@ -101,12 +118,7 @@ function createAppUpdater({ autoUpdater, app, dialog, getWindow, hasActiveDispat
   autoUpdater.on('update-not-available', async () => {
     if (!manualCheck) return;
     manualCheck = false;
-    await showMessage({
-      type: 'info',
-      title: 'Central WhatsApp Web',
-      message: 'Você já está usando a versão mais recente.',
-      buttons: ['OK']
-    });
+    await showAlreadyUpToDate();
   });
 
   autoUpdater.on('download-progress', (progress) => {
@@ -122,6 +134,15 @@ function createAppUpdater({ autoUpdater, app, dialog, getWindow, hasActiveDispat
   });
 
   autoUpdater.on('error', async (error) => {
+    if (isNoPublishedReleaseError(error)) {
+      const shouldNotify = manualCheck;
+      manualCheck = false;
+      downloadRequested = false;
+      noPublishedNoticeHandled = shouldNotify;
+      logger.info?.('[Central WhatsApp] Ainda não há uma release estável publicada.');
+      if (shouldNotify) await showAlreadyUpToDate();
+      return;
+    }
     const wasDownloading = downloadRequested;
     const shouldNotify = manualCheck || wasDownloading;
     manualCheck = false;
@@ -154,10 +175,19 @@ function createAppUpdater({ autoUpdater, app, dialog, getWindow, hasActiveDispat
       return { ok: true, downloaded: true };
     }
     manualCheck = Boolean(manual);
+    noPublishedNoticeHandled = false;
     try {
       await autoUpdater.checkForUpdates();
       return { ok: true };
     } catch (error) {
+      if (isNoPublishedReleaseError(error)) {
+        const shouldNotify = manualCheck && !noPublishedNoticeHandled;
+        manualCheck = false;
+        noPublishedNoticeHandled = false;
+        logger.info?.('[Central WhatsApp] Ainda não há uma release estável publicada.');
+        if (shouldNotify) await showAlreadyUpToDate();
+        return { ok: true, noPublishedReleases: true };
+      }
       const shouldNotify = manualCheck;
       manualCheck = false;
       logger.error('[Central WhatsApp] Falha ao consultar atualizações:', error);
@@ -198,5 +228,6 @@ function createAppUpdater({ autoUpdater, app, dialog, getWindow, hasActiveDispat
 module.exports = {
   STARTUP_CHECK_DELAY_MS,
   PERIODIC_CHECK_INTERVAL_MS,
+  isNoPublishedReleaseError,
   createAppUpdater
 };

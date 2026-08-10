@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
-const { createAppUpdater } = require('../src/app-updater');
+const { createAppUpdater, isNoPublishedReleaseError } = require('../src/app-updater');
 
 function nextTurn() {
   return new Promise((resolve) => setImmediate(resolve));
@@ -88,4 +88,26 @@ test('não consulta o servidor durante o desenvolvimento', async () => {
   assert.equal(result.reason, 'not-packaged');
   assert.equal(checks, 0);
   assert.equal(messages.length, 1);
+});
+
+test('reconhece a ausência de releases estáveis sem esconder outros erros', () => {
+  assert.equal(isNoPublishedReleaseError(new Error('No published versions on GitHub')), true);
+  assert.equal(isNoPublishedReleaseError(new Error('Unable to find latest version on GitHub')), true);
+  assert.equal(isNoPublishedReleaseError(new Error('net::ERR_INTERNET_DISCONNECTED')), false);
+});
+
+test('informa que a versão é atual quando ainda não há release publicada', async () => {
+  const fixture = updaterFixture();
+  fixture.autoUpdater.checkForUpdates = async () => {
+    const error = new Error('No published versions on GitHub');
+    fixture.autoUpdater.emit('error', error);
+    throw error;
+  };
+
+  const result = await fixture.controller.checkForUpdates({ manual: true });
+  await nextTurn();
+  assert.equal(result.noPublishedReleases, true);
+  assert.equal(fixture.messages.length, 1);
+  assert.match(fixture.messages[0].message, /versão mais recente/i);
+  assert.match(fixture.messages[0].detail, /ainda não existe uma versão estável/i);
 });
