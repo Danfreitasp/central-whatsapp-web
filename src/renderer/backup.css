@@ -1,0 +1,26 @@
+.backup-dialog { width: min(590px, calc(100vw - 36px)); }
+.backup-dialog > section { display: grid; gap: 16px; padding: 24px; }
+.backup-heading { align-items: flex-start; display: flex; justify-content: space-between; }
+.backup-heading h2 { margin: 0 0 5px; }
+.backup-heading p { color: #a5a5aa; font-size: 12px; margin: 0; }
+.backup-intro { background: rgba(255,255,255,.055); border: 1px solid rgba(255,255,255,.12); border-radius: 13px; padding: 15px 17px; }
+.backup-intro strong { font-size: 13px; }
+.backup-intro ul { color: #c7c7cb; display: grid; font-size: 12px; gap: 5px; grid-template-columns: 1fr 1fr; margin: 11px 0 0; padding-left: 20px; }
+.backup-warning { background: rgba(250,204,21,.08); border: 1px solid rgba(250,204,21,.25); border-radius: 11px; color: #e9d990; font-size: 11px; line-height: 1.5; margin: 0; padding: 11px 13px; }
+.backup-progress { display: grid; gap: 8px; }
+.backup-progress[hidden], .backup-result[hidden] { display: none !important; }
+.backup-progress > div { background: rgba(255,255,255,.1); border-radius: 999px; height: 7px; overflow: hidden; }
+.backup-progress i { background: linear-gradient(90deg,#60a5fa,#67e8f9); display: block; height: 100%; transition: width .2s ease; width: 12%; }
+.backup-progress p { color: #c8d8ee; font-size: 12px; margin: 0; }
+.backup-result { background: rgba(34,197,94,.09); border: 1px solid rgba(34,197,94,.26); border-radius: 11px; color: #b7f7ca; font-size: 12px; line-height: 1.5; padding: 11px 13px; }
+.backup-result.error { background: rgba(239,68,68,.09); border-color: rgba(239,68,68,.28); color: #fecaca; }
+.backup-actions { display: flex; gap: 9px; justify-content: flex-end; }
+.backup-actions button { background: rgba(255,255,255,.09); border: 1px solid rgba(255,255,255,.14); border-radius: 10px; color: #f1f1f3; cursor: pointer; font: inherit; font-size: 12px; padding: 10px 14px; }
+.backup-actions button:disabled, #backup-close:disabled { cursor: wait; opacity: .45; }
+.backup-actions .primary { background: linear-gradient(135deg, #fafafa, #b8b8bd); border-color: rgba(255,255,255,.55); color: #141416; font-weight: 750; }
+@media (max-width: 720px) { .backup-intro ul { grid-template-columns: 1fr; } }
+@media (max-width: 1150px) {
+  body > header { gap: 6px; padding-inline: 10px; }
+  body > header .subtitle { display: none; }
+  body > header .header-button, body > header .templates-button { font-size: 11px; padding-inline: 8px; }
+}

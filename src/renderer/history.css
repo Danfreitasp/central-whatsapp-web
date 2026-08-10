@@ -1,0 +1,41 @@
+.dispatch-history-dialog {
+  background: rgba(25, 25, 28, .96);
+  border: 1px solid rgba(255, 255, 255, .18);
+  border-radius: 20px;
+  color: #f0f0f2;
+  max-height: min(780px, calc(100vh - 50px));
+  padding: 0;
+  width: min(1050px, calc(100vw - 40px));
+}
+.dispatch-history-dialog::backdrop { background: rgba(0, 0, 0, .67); backdrop-filter: blur(4px); }
+.dispatch-history-dialog > section { display: grid; gap: 16px; padding: 25px; }
+.dispatch-history-filters { display: grid; gap: 10px; grid-template-columns: minmax(160px, .8fr) minmax(130px, .55fr) minmax(240px, 1.4fr); }
+.dispatch-history-filters label { color: #a7a7ac; display: grid; font-size: 11px; font-weight: 650; gap: 6px; }
+.dispatch-history-filters input,
+.dispatch-history-filters select {
+  background: rgba(0, 0, 0, .36);
+  border: 1px solid rgba(255, 255, 255, .16);
+  border-radius: 9px;
+  color: #f4f4f5;
+  font: inherit;
+  min-width: 0;
+  outline: 0;
+  padding: 9px 10px;
+}
+.dispatch-history-filters input:focus,
+.dispatch-history-filters select:focus { border-color: rgba(96, 165, 250, .7); box-shadow: 0 0 0 3px rgba(59, 130, 246, .14); }
+.dispatch-history-toolbar { align-items: center; display: flex; justify-content: space-between; }
+.dispatch-history-toolbar span { color: #a7a7ac; font-size: 11px; }
+.dispatch-history-toolbar button { min-width: 120px; }
+.dispatch-history-table-wrap { border: 1px solid rgba(255, 255, 255, .1); border-radius: 13px; max-height: 470px; overflow: auto; }
+.dispatch-history-table { border-collapse: collapse; min-width: 820px; width: 100%; }
+.dispatch-history-table th { background: #202023; color: #a7a7ac; font-size: 10px; letter-spacing: .04em; padding: 10px; position: sticky; text-align: left; text-transform: uppercase; top: 0; z-index: 1; }
+.dispatch-history-table td { border-top: 1px solid rgba(255, 255, 255, .08); color: #d4d4d8; font-size: 11px; padding: 10px; vertical-align: top; }
+.dispatch-history-table td small { color: #8f8f97; display: block; font-size: 9px; margin-top: 3px; max-width: 280px; overflow-wrap: anywhere; }
+.dispatch-history-table .history-sent { color: #86efac; font-weight: 700; }
+.dispatch-history-table .history-error { color: #fca5a5; font-weight: 700; }
+.dispatch-history-empty { color: #92929a; font-size: 12px; margin: 0; padding: 35px; text-align: center; }
+.dispatch-history-empty[hidden] { display: none; }
+@media (max-width: 760px) {
+  .dispatch-history-filters { grid-template-columns: 1fr; }
+}

@@ -1,0 +1,50 @@
+{
+  "name": "central-whatsapp-web",
+  "version": "0.10.12",
+  "description": "Central local de múltiplas sessões do WhatsApp Web com disparos por planilha ou lista",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder --win nsis",
+    "release:draft": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/publish-draft.ps1",
+    "test": "node --test tests/*.test.js",
+    "test:ui-search": "electron tests/ui-search-smoke.js"
+  },
+  "devDependencies": {
+    "electron": "^43.2.0",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "com.codex.centralwhatsappweb",
+    "productName": "Central WhatsApp Web",
+    "artifactName": "Central-WhatsApp-Web-Setup-${version}.${ext}",
+    "directories": {
+      "output": "dist"
+    },
+    "icon": "assets/icon.png",
+    "files": [
+      "src/**/*",
+      "assets/**/*",
+      "package.json"
+    ],
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "Danfreitasp",
+        "repo": "central-whatsapp-web-updates",
+        "releaseType": "draft"
+      }
+    ],
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Central WhatsApp Web"
+    }
+  },
+  "dependencies": {
+    "adm-zip": "^0.6.0",
+    "electron-updater": "^6.8.9"
+  }
+}

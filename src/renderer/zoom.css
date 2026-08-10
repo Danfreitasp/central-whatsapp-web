@@ -1,0 +1,5 @@
+.zoom-controls { align-items: center; background: rgba(255,255,255,.065); border: 1px solid rgba(255,255,255,.13); border-radius: 11px; display: flex; gap: 1px; padding: 3px; }
+.zoom-controls button { background: transparent; border: 0; border-radius: 8px; color: #e3e3e6; cursor: pointer; font: inherit; min-width: 29px; padding: 4px 7px; transition: background .18s ease; }
+.zoom-controls button:hover { background: rgba(255,255,255,.15); }
+.zoom-controls #zoom-label { color: #b9b9be; font-size: 12px; min-width: 49px; }
+.zoom-controls button:disabled { cursor: default; opacity: .42; }

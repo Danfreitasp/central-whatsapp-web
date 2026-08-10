@@ -1,0 +1,2 @@
+.header-button { background: rgba(255,255,255,.075); border: 1px solid rgba(255,255,255,.13); border-radius: 10px; color: #e9e9ec; cursor: pointer; font: inherit; font-size: 13px; font-weight: 600; padding: 6px 11px; transition: background .18s ease, transform .18s ease; }
+.header-button:hover { background: rgba(255,255,255,.15); transform: translateY(-1px); }

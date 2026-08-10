@@ -1,0 +1,338 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Central WhatsApp Web</title>
+    <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="notifications.css" />
+    <link rel="stylesheet" href="zoom.css" />
+    <link rel="stylesheet" href="templates.css" />
+    <link rel="stylesheet" href="profiles.css" />
+    <link rel="stylesheet" href="tools.css" />
+    <link rel="stylesheet" href="labels.css" />
+    <link rel="stylesheet" href="dispatch.css" />
+    <link rel="stylesheet" href="history.css" />
+    <link rel="stylesheet" href="campaigns.css" />
+    <link rel="stylesheet" href="backup.css" />
+  </head>
+  <body>
+    <header><span class="logo">◉</span><strong>Central WhatsApp Web</strong><span class="subtitle">Sessões independentes</span><button id="labels-button" class="header-button">Etiquetas</button><button id="templates-button" class="templates-button">Modelos</button><button id="campaigns-button" class="header-button">Campanhas</button><button id="dispatch-history-button" class="header-button">Histórico</button><button id="dispatch-button" class="header-button dispatch-header-button">Disparos</button><button id="backup-button" class="header-button" title="Salvar a conversa aberta com áudios">Backup</button><div class="zoom-controls"><button id="zoom-out" title="Diminuir zoom">−</button><button id="zoom-label" title="Restaurar zoom">100%</button><button id="zoom-in" title="Aumentar zoom">+</button></div></header>
+    <aside>
+      <div class="aside-title">SEUS NÚMEROS</div>
+      <nav id="profiles"></nav>
+      <button id="add-button" class="add-button">+ Conectar outro número</button>
+      <p class="hint">Clique aqui para cada número. Leia o QR Code somente no primeiro acesso de cada sessão.</p>
+    </aside>
+    <main id="empty-state"><div><h1>Organize seus WhatsApps</h1><p>Adicione um número para abrir sua sessão do WhatsApp Web.</p></div></main>
+    <main id="dispatch-background-state" class="dispatch-background-state" hidden>
+      <div>
+        <span class="dispatch-background-pulse"></span>
+        <h1>Envio em segundo plano</h1>
+        <p id="dispatch-background-text">Este número ficará reservado até o lote terminar.</p>
+        <small>Você pode usar os outros números e acompanhar pelo botão Disparos.</small>
+      </div>
+    </main>
+    <dialog id="profile-dialog">
+      <form id="profile-form" method="dialog">
+        <h2>Novo número</h2>
+        <label>Identificação<input id="name" maxlength="40" placeholder="Ex.: Comercial" required autofocus /></label>
+        <label>Cor<input id="color" type="color" value="#00a884" /></label>
+        <div class="actions"><button type="button" id="cancel">Cancelar</button><button type="submit" class="primary">Adicionar</button></div>
+      </form>
+    </dialog>
+    <dialog id="rename-dialog">
+      <form id="rename-form" method="dialog">
+        <h2>Editar identificação</h2>
+        <label>Nome do número<input id="rename-name" maxlength="40" required autofocus /></label>
+        <div class="actions"><button type="button" id="rename-cancel">Cancelar</button><button type="submit" class="primary">Salvar</button></div>
+      </form>
+    </dialog>
+    <dialog id="backup-dialog" class="backup-dialog">
+      <section>
+        <div class="backup-heading">
+          <div><h2>Backup da conversa</h2><p id="backup-profile">Conversa aberta no número selecionado</p></div>
+          <button id="backup-close" type="button" class="icon-button" title="Fechar">×</button>
+        </div>
+        <div class="backup-intro">
+          <strong>O pacote ZIP incluirá</strong>
+          <ul><li>prints reais da conversa, em ordem</li><li>áudios originais numerados por data</li></ul>
+        </div>
+        <p class="backup-warning">O WhatsApp não permite recuperar mensagens já apagadas ou mídias expiradas. Abra a conversa correta antes de continuar.</p>
+        <div id="backup-progress" class="backup-progress" hidden>
+          <div><i id="backup-progress-bar"></i></div>
+          <p id="backup-progress-text">Aguardando início…</p>
+        </div>
+        <div id="backup-result" class="backup-result" hidden></div>
+        <div class="backup-actions">
+          <button id="backup-cancel" type="button">Cancelar</button>
+          <button id="backup-generate" type="button" class="primary">Escolher local e gerar ZIP</button>
+        </div>
+      </section>
+    </dialog>
+    <dialog id="templates-dialog" class="templates-dialog">
+      <section>
+        <div class="templates-heading"><div><h2>Modelos de mensagem</h2><p>Salve textos para conversas e para o rodízio automático dos disparos.</p></div><button id="templates-close" class="icon-button" title="Fechar">×</button></div>
+        <form id="template-form" class="template-form">
+          <input id="template-name" maxlength="60" placeholder="Nome do modelo (ex.: Retorno de cliente)" required />
+          <textarea id="template-body" maxlength="4096" placeholder="Escreva a mensagem padrão…" required></textarea>
+          <div class="template-form-actions">
+            <button id="template-edit-cancel" type="button" hidden>Cancelar edição</button>
+            <button id="template-submit" type="submit" class="primary">Salvar modelo</button>
+          </div>
+        </form>
+        <div id="templates-list" class="templates-list"></div>
+      </section>
+    </dialog>
+    <dialog id="labels-dialog" class="labels-dialog">
+      <section>
+        <div class="templates-heading"><div><h2>Etiquetas do chat</h2><p id="labels-chat-name">Abra uma conversa para adicionar etiquetas.</p></div><button id="labels-close" class="icon-button" title="Fechar">×</button></div>
+        <div id="chat-labels-list" class="chat-labels-list"></div>
+        <form id="label-form" class="label-form">
+          <input id="label-name" maxlength="30" placeholder="Nova etiqueta" required />
+          <input id="label-color" type="color" value="#2dd4bf" title="Cor da etiqueta" />
+          <button type="submit" class="primary">Criar etiqueta</button>
+        </form>
+        <p class="labels-note">As etiquetas são salvas apenas neste aplicativo e neste número do WhatsApp.</p>
+      </section>
+    </dialog>
+    <dialog id="dispatch-history-dialog" class="dispatch-history-dialog">
+      <section>
+        <div class="templates-heading">
+          <div><h2>Histórico de disparos</h2><p>Consulte os envios realizados por todos os números da Central.</p></div>
+          <button id="dispatch-history-close" class="icon-button" title="Fechar">×</button>
+        </div>
+        <div class="dispatch-history-filters">
+          <label>Número utilizado<select id="dispatch-history-profile"><option value="">Todos os números</option></select></label>
+          <label>Resultado<select id="dispatch-history-status"><option value="">Todos</option><option value="sent">Enviados</option><option value="error">Erros</option></select></label>
+          <label class="dispatch-history-search">Pesquisar<input id="dispatch-history-query" placeholder="Nome, telefone, modelo ou motivo" /></label>
+        </div>
+        <div class="dispatch-history-toolbar">
+          <span id="dispatch-history-summary">Nenhum registro.</span>
+          <button id="dispatch-history-export" type="button" class="dispatch-secondary">Exportar CSV</button>
+        </div>
+        <div class="dispatch-history-table-wrap">
+          <table class="dispatch-history-table">
+            <thead><tr><th>Data</th><th>Número</th><th>Destinatário</th><th>Modelo</th><th>Resultado</th></tr></thead>
+            <tbody id="dispatch-history-list"></tbody>
+          </table>
+          <p id="dispatch-history-empty" class="dispatch-history-empty">Nenhum envio encontrado.</p>
+        </div>
+      </section>
+    </dialog>
+    <dialog id="campaigns-dialog" class="campaigns-dialog">
+      <section>
+        <div class="templates-heading">
+          <div><h2>Campanhas</h2><p>Organize planilhas grandes, evite contatos repetidos e retome envios interrompidos.</p></div>
+          <button id="campaigns-close" class="icon-button" title="Fechar">×</button>
+        </div>
+        <div class="campaigns-toolbar">
+          <div><strong>Gerenciador de planilhas</strong><span>O progresso é salvo depois de cada tentativa.</span></div>
+          <button id="campaigns-new" type="button" class="primary">Importar planilha</button>
+        </div>
+        <section id="campaigns-import" class="campaigns-import" hidden>
+          <div class="campaigns-import-heading"><div><strong>Nova campanha</strong><span>Importe e confira a planilha sem sair desta tela.</span></div><button id="campaigns-import-cancel" type="button" class="icon-button" title="Cancelar">×</button></div>
+          <label class="campaigns-file-picker" for="campaigns-file"><strong>Selecionar Excel ou CSV</strong><span>.xlsx, .xls ou .csv — somente telefone é obrigatório</span></label>
+          <input id="campaigns-file" type="file" accept=".xlsx,.xls,.csv" hidden />
+          <p id="campaigns-file-name" class="campaigns-import-status">Nenhum arquivo selecionado.</p>
+          <div class="campaigns-import-fields">
+            <label>Nome da campanha<input id="campaigns-import-name" maxlength="100" placeholder="Ex.: Clientes agosto" /></label>
+            <label>Não repetir contatos enviados<select id="campaigns-import-repeat">
+              <option value="90">Nos últimos 90 dias</option><option value="30">Nos últimos 30 dias</option><option value="60">Nos últimos 60 dias</option><option value="180">Nos últimos 180 dias</option><option value="365">No último ano</option><option value="0">Nunca reenviar</option><option value="-1">Bloquear somente nesta campanha</option>
+            </select></label>
+          </div>
+          <div id="campaigns-import-summary" class="campaigns-import-summary" hidden></div>
+          <div class="campaigns-import-actions"><span id="campaigns-import-result"></span><button id="campaigns-import-save" type="button" class="dispatch-primary" disabled>Salvar campanha</button></div>
+        </section>
+        <div id="campaigns-list" class="campaigns-list"></div>
+        <div id="campaigns-empty" class="campaigns-empty">
+          <strong>Nenhuma campanha salva</strong>
+          <span>Importe uma planilha para começar a controlar os contatos enviados.</span>
+        </div>
+      </section>
+    </dialog>
+    <dialog id="dispatch-dialog" class="dispatch-dialog">
+      <section>
+        <div class="dispatch-heading">
+          <div>
+            <h2>Disparos</h2>
+            <p id="dispatch-heading-description">Prepare uma lista avulsa ou distribua uma campanha entre vários números.</p>
+            <strong id="dispatch-profile-name" hidden>selecionado</strong>
+          </div>
+          <button id="dispatch-close" class="icon-button" title="Fechar">×</button>
+        </div>
+
+        <div class="dispatch-workflow-tabs" role="tablist" aria-label="Tipo de disparo">
+          <button type="button" id="dispatch-workflow-single" class="active" aria-selected="true">
+            <strong>Disparo único</strong><span>Planilha temporária ou números colados</span>
+          </button>
+          <button type="button" id="dispatch-workflow-campaign" aria-selected="false">
+            <strong>Campanha</strong><span>Contatos salvos e distribuição entre números</span>
+          </button>
+        </div>
+
+        <div class="dispatch-grid">
+          <div class="dispatch-column">
+            <section id="dispatch-campaign-picker" class="dispatch-campaign-picker" hidden>
+              <div class="dispatch-card-heading"><div><strong>Escolher campanha</strong><span>Carregue pendentes ou tente novamente somente as falhas.</span></div></div>
+              <label>Campanha salva<select id="dispatch-campaign-select"></select></label>
+              <div class="dispatch-campaign-picker-fields">
+                <label>Contatos<select id="dispatch-campaign-contact-mode"><option value="pending">Pendentes</option><option value="errors">Erros</option></select></label>
+                <label>Meta efetiva<input id="dispatch-campaign-target" type="number" min="1" max="5000" value="50" /></label>
+              </div>
+              <p id="dispatch-campaign-picker-summary" class="dispatch-muted"></p>
+              <button id="dispatch-campaign-load" type="button" class="dispatch-secondary">Carregar campanha</button>
+            </section>
+            <div class="dispatch-section-title"><span>1</span><strong id="dispatch-source-title">Telefones</strong></div>
+            <div class="dispatch-source-tabs" role="tablist" aria-label="Origem dos telefones">
+              <button type="button" id="dispatch-source-sheet" class="active" aria-selected="true">Planilha</button>
+              <button type="button" id="dispatch-source-manual" aria-selected="false">Colar lista</button>
+            </div>
+
+            <div id="dispatch-sheet-panel" class="dispatch-source-panel">
+              <label class="dispatch-file-picker" for="dispatch-file">
+                <strong>Selecionar Excel ou CSV</strong>
+                <span>.xlsx, .xls ou .csv — somente telefone é obrigatório</span>
+              </label>
+              <input id="dispatch-file" type="file" accept=".xlsx,.xls,.csv" hidden />
+              <p id="dispatch-file-name" class="dispatch-muted">Nenhum arquivo selecionado.</p>
+            </div>
+
+            <div id="dispatch-manual-panel" class="dispatch-source-panel" hidden>
+              <label for="dispatch-manual-phones">Cole um telefone por linha</label>
+              <textarea id="dispatch-manual-phones" rows="7" placeholder="(27) 99999-9999&#10;27988888888&#10;5527997777777"></textarea>
+            </div>
+
+            <label class="dispatch-inline-field">
+              <span id="dispatch-limit-label">Limite do lote</span>
+              <input id="dispatch-limit" type="number" min="1" max="5000" value="50" />
+            </label>
+            <button id="dispatch-validate" type="button" class="dispatch-secondary" disabled>Validar planilha</button>
+            <div id="dispatch-preview" class="dispatch-preview" hidden></div>
+            <section id="dispatch-distribution" class="dispatch-distribution" hidden>
+              <div class="dispatch-card-heading"><div><strong>Distribuir entre números</strong><span>Selecione quem participará da meta global.</span></div><span id="dispatch-distribution-count"></span></div>
+              <label class="dispatch-distribution-mode">Forma de distribuição<select id="dispatch-distribution-mode"><option value="balanced">Automática e equilibrada</option><option value="custom">Cotas personalizadas</option></select></label>
+              <div id="dispatch-distribution-profiles" class="dispatch-distribution-profiles"></div>
+              <p id="dispatch-distribution-summary" class="dispatch-muted"></p>
+            </section>
+            <section id="dispatch-campaign-save" class="dispatch-campaign-save" hidden>
+              <div><strong>Salvar no gerenciador</strong><span>Importe todos os contatos válidos e bloqueie quem já recebeu mensagem.</span></div>
+              <label>Nome da campanha<input id="dispatch-campaign-name" maxlength="100" placeholder="Ex.: Clientes agosto" /></label>
+              <label>Não repetir contatos enviados<select id="dispatch-campaign-repeat">
+                <option value="90">Nos últimos 90 dias</option>
+                <option value="30">Nos últimos 30 dias</option>
+                <option value="60">Nos últimos 60 dias</option>
+                <option value="180">Nos últimos 180 dias</option>
+                <option value="365">No último ano</option>
+                <option value="0">Nunca reenviar</option>
+                <option value="-1">Bloquear somente nesta campanha</option>
+              </select></label>
+              <button id="dispatch-campaign-create" type="button" class="dispatch-secondary">Salvar campanha</button>
+              <p id="dispatch-campaign-result" class="dispatch-muted"></p>
+            </section>
+          </div>
+
+          <div class="dispatch-column">
+            <div class="dispatch-section-title"><span>2</span> Mensagem</div>
+            <label for="dispatch-message-mode">Forma de envio</label>
+            <select id="dispatch-message-mode">
+              <option value="single">Uma mensagem para todos</option>
+              <option value="variants">Variar modelos entre os clientes</option>
+            </select>
+            <div id="dispatch-single-message" class="dispatch-message-mode-panel">
+              <label for="dispatch-saved-template">Usar um modelo salvo</label>
+              <select id="dispatch-saved-template">
+                <option value="">Escrever mensagem</option>
+              </select>
+              <label for="dispatch-message">Texto da mensagem</label>
+              <textarea id="dispatch-message" rows="8" maxlength="4096" placeholder="Escreva uma mensagem fixa ou use as variáveis disponíveis."></textarea>
+            </div>
+            <div id="dispatch-variant-message" class="dispatch-message-mode-panel dispatch-variant-panel" hidden>
+              <label class="dispatch-inline-field" for="dispatch-variant-count">
+                <span>Quantidade de textos diferentes</span>
+                <input id="dispatch-variant-count" type="number" min="2" max="20" value="2" />
+              </label>
+              <p id="dispatch-variant-help" class="dispatch-muted">Selecione os modelos que participarão do rodízio.</p>
+              <div id="dispatch-variant-list" class="dispatch-variant-list"></div>
+              <p id="dispatch-variant-status" class="dispatch-variant-status"></p>
+            </div>
+            <label for="dispatch-sender-name">Nome do atendente <small>(opcional)</small></label>
+            <input id="dispatch-sender-name" maxlength="80" placeholder="Ex.: Tatiana Silva" />
+            <details class="dispatch-placeholders">
+              <summary>Variáveis disponíveis</summary>
+              <p><code>{nome}</code> <code>{primeiroNome}</code> <code>{url}</code></p>
+              <p><code>{meuNome}</code> <code>{meuPrimeiroNome}</code> <code>{vendedor}</code></p>
+              <p><code>{qtdOportunidades}</code> <code>{valorDisponivel}</code> <code>{valorEmprestimo}</code> <code>{parcela}</code> <code>{qtdContratos}</code></p>
+            </details>
+            <div id="dispatch-message-preview-card" class="dispatch-message-preview-card" hidden>
+              <div class="dispatch-message-preview-heading">
+                <strong>Prévia da mensagem</strong>
+                <span>Exatamente como será enviada</span>
+              </div>
+              <label for="dispatch-preview-recipient">Conferir destinatário</label>
+              <select id="dispatch-preview-recipient"></select>
+              <p id="dispatch-preview-identity" class="dispatch-preview-identity"></p>
+              <div id="dispatch-message-preview" class="dispatch-message-bubble"></div>
+            </div>
+            <div class="dispatch-options">
+              <label><span>Pausa entre envios</span><span><input id="dispatch-delay" type="number" min="3" max="120" value="12" /> segundos</span></label>
+              <label class="dispatch-check"><input id="dispatch-jitter" type="checkbox" checked /> Variar a pausa automaticamente</label>
+            </div>
+            <div class="dispatch-schedule-box">
+              <div>
+                <strong>Agendar este lote</strong>
+                <small>A Central precisa estar aberta. Se estiver fechada no horário, o lote inicia na próxima abertura.</small>
+              </div>
+              <div class="dispatch-schedule-controls">
+                <input id="dispatch-scheduled-at" type="datetime-local" />
+                <button id="dispatch-schedule" type="button" class="dispatch-secondary" disabled>Agendar</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <section id="dispatch-schedules-card" class="dispatch-schedules-card" hidden>
+          <div class="dispatch-card-heading"><strong>Agendamentos</strong><span id="dispatch-schedules-count"></span></div>
+          <ul id="dispatch-schedules-list"></ul>
+        </section>
+
+        <section id="dispatch-distribution-dashboard" class="dispatch-distribution-dashboard" hidden>
+          <div class="dispatch-card-heading">
+            <div><strong id="dispatch-distribution-title">Distribuição em andamento</strong><span id="dispatch-distribution-overall"></span></div>
+            <div class="dispatch-distribution-global-actions"><button id="dispatch-distribution-pause" type="button" class="dispatch-secondary">Pausar todos</button><button id="dispatch-distribution-stop" type="button" class="dispatch-danger">Parar distribuição</button></div>
+          </div>
+          <div class="dispatch-progress"><i id="dispatch-distribution-progress"></i></div>
+          <div id="dispatch-distribution-workers" class="dispatch-distribution-workers"></div>
+        </section>
+
+        <div id="dispatch-status" class="dispatch-status" hidden>
+          <div class="dispatch-progress"><i id="dispatch-progress-bar"></i></div>
+          <p id="dispatch-status-text">Aguardando…</p>
+          <ul id="dispatch-log"></ul>
+        </div>
+
+        <section id="dispatch-failures" class="dispatch-failures" hidden>
+          <div class="dispatch-card-heading">
+            <div><strong>Falhas no envio</strong><span id="dispatch-failures-count"></span></div>
+            <button id="dispatch-save-failures" type="button" class="dispatch-secondary">Salvar CSV</button>
+          </div>
+          <ul id="dispatch-failures-list"></ul>
+        </section>
+
+        <div class="dispatch-actions">
+          <button id="dispatch-stop" type="button" class="dispatch-danger" disabled>Parar</button>
+          <button id="dispatch-pause" type="button" class="dispatch-secondary" disabled>Pausar</button>
+          <button id="dispatch-start" type="button" class="dispatch-primary" disabled>Iniciar disparo</button>
+        </div>
+      </section>
+    </dialog>
+    <script src="../vendor/xlsx.full.min.js"></script>
+    <script src="dispatch-columns.js"></script>
+    <script src="message-variants.js"></script>
+    <script src="renderer.js"></script>
+    <script src="history.js"></script>
+    <script src="dispatch.js"></script>
+    <script src="campaigns.js"></script>
+    <script src="backup.js"></script>
+  </body>
+</html>

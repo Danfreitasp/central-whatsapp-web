@@ -1,0 +1,27 @@
+.rename { background: transparent; border: 0; border-radius: 8px; color: #b8b8bc; cursor: pointer; font-size: 15px; line-height: 1; opacity: 0; padding: 6px; transition: opacity .18s ease, background .18s ease; }
+.profile:hover .rename { opacity: 1; }
+.rename:hover { background: rgba(255,255,255,.13); color: #fff; }
+.profile[draggable="true"] { cursor: grab; }
+.profile[draggable="true"]:active { cursor: grabbing; }
+.profile.dragging { opacity: .38; }
+.profile.drop-before { box-shadow: 0 -3px 0 #f0f0f2; }
+.profile.drop-after { box-shadow: 0 3px 0 #f0f0f2; }
+.profile.sending {
+  background: rgba(37, 99, 235, .1);
+  border-color: rgba(96, 165, 250, .28);
+}
+.profile.sending .profile-select { cursor: pointer; opacity: .82; }
+.profile.sending .rename, .profile.sending .remove { display: none; }
+.sending-badge {
+  background: rgba(96, 165, 250, .18);
+  border: 1px solid rgba(147, 197, 253, .25);
+  border-radius: 999px;
+  color: #bfdbfe;
+  font-size: 9px;
+  font-style: normal;
+  font-weight: 750;
+  letter-spacing: .04em;
+  margin-left: auto;
+  padding: 3px 6px;
+  text-transform: uppercase;
+}
