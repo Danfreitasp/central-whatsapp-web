@@ -1,4 +1,4 @@
-const { app, BrowserWindow, BrowserView, clipboard, dialog, ipcMain, Menu, Notification, session, shell } = require('electron');
+const { app, BrowserWindow, BrowserView, clipboard, dialog, ipcMain, Menu, Notification, session, shell, Tray, nativeImage } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
@@ -19,6 +19,8 @@ const { preloadProfiles } = require('./profile-preload');
 const { applySemNomeVariantsMigration } = require('./template-migrations');
 const { normalizeMessageVariants, createSuccessfulVariantRotation } = require('./message-variant-rotation');
 const { createApplicationMenuTemplate } = require('./application-menu');
+const { isLikelyBlankImage } = require('./browser-surface-health');
+const { syncWindowsStartup, createTrayMenuTemplate } = require('./windows-integration');
 const {
   isBrowserViewAttached,
   keepBrowserViewReady,
@@ -59,6 +61,8 @@ const WPP_CONNECT_PATH = path.join(__dirname, 'vendor', 'wppconnect-wa.js');
 // Sem isso, o Electron aberto por "npm start" cria uma pasta isolada chamada
 // "Electron" e parece não ter nenhum número conectado.
 app.setPath('userData', path.join(app.getPath('appData'), 'central-whatsapp-web'));
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+if (!hasSingleInstanceLock) app.quit();
 
 if (process.platform === 'win32') {
   app.setAppUserModelId(APP_USER_MODEL_ID);
@@ -88,6 +92,11 @@ const conversationBackupCancellations = new Set();
 let profileSwitchRevision = 0;
 let browserViewsSuspended = false;
 let appUpdaterController = null;
+let tray = null;
+let isQuitting = false;
+let surfaceHealthTimer = null;
+const blankSurfaceStrikes = new Map();
+const startHidden = process.argv.includes('--hidden');
 
 function hasActiveDispatches() {
   return [...dispatchStates.values()].some((state) => state?.running);
@@ -241,6 +250,81 @@ function loadSettings() {
 
 function saveSettings() {
   fs.writeFileSync(settingsPath(), JSON.stringify(settings, null, 2), 'utf8');
+}
+
+function startupAvailable() {
+  return process.platform === 'win32' && app.isPackaged;
+}
+
+function rebuildApplicationMenu() {
+  Menu.setApplicationMenu(Menu.buildFromTemplate(createApplicationMenuTemplate(app.getVersion(), {
+    startupEnabled: settings.startWithWindows !== false,
+    startupAvailable: startupAvailable(),
+    onToggleStartup: setStartWithWindows,
+    onCheckForUpdates: () => appUpdaterController?.checkForUpdates({ manual: true })
+  })));
+}
+
+function rebuildTrayMenu() {
+  if (!tray) return;
+  tray.setContextMenu(Menu.buildFromTemplate(createTrayMenuTemplate({
+    startupEnabled: settings.startWithWindows !== false,
+    startupAvailable: startupAvailable(),
+    onShow: showMainWindow,
+    onToggleStartup: setStartWithWindows,
+    onQuit: () => {
+      isQuitting = true;
+      app.quit();
+    }
+  })));
+}
+
+function setStartWithWindows(enabled) {
+  settings.startWithWindows = Boolean(enabled);
+  saveSettings();
+  syncWindowsStartup(app, settings.startWithWindows);
+  rebuildApplicationMenu();
+  rebuildTrayMenu();
+}
+
+function createTray() {
+  if (tray) return tray;
+  const iconPath = path.join(__dirname, '..', 'assets', 'icon.png');
+  const icon = nativeImage.createFromPath(iconPath).resize({ width: 16, height: 16, quality: 'best' });
+  tray = new Tray(icon);
+  tray.setToolTip('Central WhatsApp Web');
+  tray.on('click', showMainWindow);
+  rebuildTrayMenu();
+  return tray;
+}
+
+function showMainWindow() {
+  if (!window || window.isDestroyed()) return;
+  if (window.isMinimized()) window.restore();
+  window.show();
+  browserViewsSuspended = false;
+  showActiveView();
+  window.focus();
+}
+
+function showFirstTrayNotice() {
+  if (settings.trayCloseNoticeShown) return;
+  settings.trayCloseNoticeShown = true;
+  saveSettings();
+  const title = 'Central WhatsApp Web continua aberta';
+  const content = 'O botão fechar agora envia o programa para a bandeja. Para encerrar, use Bandeja > Sair.';
+  if (process.platform === 'win32' && typeof tray?.displayBalloon === 'function') {
+    tray.displayBalloon({ title, content, iconType: 'info' });
+  } else if (Notification.isSupported()) {
+    new Notification({ title, body: content }).show();
+  }
+}
+
+function hideMainWindowToTray() {
+  if (!window || window.isDestroyed()) return;
+  hideActiveView();
+  window.hide();
+  showFirstTrayNotice();
 }
 
 function templateForPublic(template) {
@@ -429,21 +513,7 @@ function setActiveProfile(id) {
   const bounds = activeViewBounds();
   const selectedView = views.get(id);
   isolateActiveBrowserView(window, views.values(), selectedView, bounds);
-
-  // Algumas GPUs mantêm o renderer vivo, mas não recompõem o quadro ao mover
-  // uma BrowserView de volta para dentro da janela. Uma variação imperceptível
-  // de 1 px força um novo frame sem navegar nem alterar a conversa.
-  setTimeout(() => {
-    if (!window || window.isDestroyed() || browserViewsSuspended || activeProfileId !== id || profileSwitchRevision !== revision) return;
-    const currentView = views.get(id);
-    if (!currentView || currentView.webContents.isDestroyed()) return;
-    const currentBounds = activeViewBounds();
-    currentView.setBounds({
-      ...currentBounds,
-      width: Math.max(1, currentBounds.width - 1)
-    });
-    currentView.webContents.invalidate?.();
-  }, 35);
+  syncSessionResourcePolicy();
 
   // Um carregamento paralelo pode terminar exatamente durante a troca. Reafirma
   // o isolamento para que somente a sessão escolhida possa receber cliques.
@@ -456,7 +526,16 @@ function setActiveProfile(id) {
 }
 
 function keepSessionsActive() {
-  for (const view of views.values()) view.webContents.setBackgroundThrottling(false);
+  syncSessionResourcePolicy();
+}
+
+function syncSessionResourcePolicy() {
+  for (const [profileId, view] of views) {
+    if (!view || view.webContents.isDestroyed()) continue;
+    const dispatchRunning = Boolean(dispatchStates.get(profileId)?.running);
+    const visible = !browserViewsSuspended && profileId === activeProfileId;
+    view.webContents.setBackgroundThrottling(!(visible || dispatchRunning));
+  }
 }
 
 function hideActiveView() {
@@ -465,6 +544,7 @@ function hideActiveView() {
   for (const view of views.values()) {
     if (isBrowserViewAttached(window, view)) window.removeBrowserView(view);
   }
+  syncSessionResourcePolicy();
 }
 
 function showActiveView() {
@@ -474,6 +554,57 @@ function showActiveView() {
   browserViewsSuspended = false;
   createView(profile);
   setActiveProfile(profile.id);
+}
+
+function recoverActiveBrowserSurface(view) {
+  if (!window || window.isDestroyed() || !view || view.webContents.isDestroyed()) return;
+  const bounds = activeViewBounds();
+  view.webContents.setBackgroundThrottling(false);
+  view.webContents.invalidate?.();
+  view.setBounds({ ...bounds, width: Math.max(1, bounds.width - 1) });
+  setTimeout(() => {
+    if (!window || window.isDestroyed() || browserViewsSuspended || views.get(activeProfileId) !== view) return;
+    view.setBounds(activeViewBounds());
+    view.webContents.invalidate?.();
+  }, 80);
+}
+
+async function checkActiveBrowserSurface() {
+  if (!window || window.isDestroyed() || !window.isVisible() || window.isMinimized() || browserViewsSuspended) return;
+  const profileId = activeProfileId;
+  const view = views.get(profileId);
+  if (!profileId || !view || view.webContents.isDestroyed() || view.webContents.isLoadingMainFrame()) return;
+
+  try {
+    const image = await Promise.race([
+      view.webContents.capturePage(),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('tempo esgotado ao verificar superfície')), 4000))
+    ]);
+    if (profileId !== activeProfileId || views.get(profileId) !== view) return;
+    if (!isLikelyBlankImage(image)) {
+      blankSurfaceStrikes.delete(profileId);
+      return;
+    }
+
+    const strikes = (blankSurfaceStrikes.get(profileId) || 0) + 1;
+    blankSurfaceStrikes.set(profileId, strikes);
+    console.warn(`[Central WhatsApp] Superfície vazia detectada em ${profileId}; tentativa ${strikes} de recuperação.`);
+    recoverActiveBrowserSurface(view);
+
+    // Se o compositor não voltou em duas verificações e não há envio em curso,
+    // faz automaticamente o mesmo refresh que antes precisava ser manual.
+    if (strikes >= 2 && !runningDispatchState(profileId)) {
+      blankSurfaceStrikes.delete(profileId);
+      view.webContents.reload();
+    }
+  } catch (error) {
+    console.warn('[Central WhatsApp] Não foi possível verificar a superfície ativa:', error.message || String(error));
+  }
+}
+
+function startSurfaceHealthMonitor() {
+  clearInterval(surfaceHealthTimer);
+  surfaceHealthTimer = setInterval(checkActiveBrowserSurface, 15000);
 }
 
 function sleep(ms) {
@@ -1413,21 +1544,39 @@ function createView(profile) {
   });
   view.webContents.setUserAgent(WHATSAPP_USER_AGENT);
   view.webContents.setZoomFactor(profile.zoom || 1);
-  view.webContents.setBackgroundThrottling(false);
+  view.webContents.setBackgroundThrottling(!(profile.id === activeProfileId || runningDispatchState(profile.id)));
   view.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   view.webContents.on('page-title-updated', (_event, title) => {
     const unread = unreadFromTitle(title);
     publishUnread(profile.id, unread);
   });
   view.webContents.once('did-finish-load', () => {
-    view.webContents.setBackgroundThrottling(false);
+    syncSessionResourcePolicy();
     publishUnread(profile.id, unreadFromTitle(view.webContents.getTitle()));
     syncLabelsToView(profile.id);
   });
+  view.webContents.on('unresponsive', () => {
+    console.warn(`[Central WhatsApp] Sessão ${profile.id} deixou de responder; tentando recuperar a superfície.`);
+    if (profile.id === activeProfileId) recoverActiveBrowserSurface(view);
+  });
+  view.webContents.on('render-process-gone', (_event, details) => {
+    console.error(`[Central WhatsApp] Renderer da sessão ${profile.id} encerrou (${details?.reason || 'motivo desconhecido'}).`);
+    blankSurfaceStrikes.delete(profile.id);
+    if (details?.reason === 'clean-exit') return;
+    setTimeout(() => {
+      if (isQuitting || views.get(profile.id) !== view) return;
+      if (isBrowserViewAttached(window, view)) window.removeBrowserView(view);
+      views.delete(profile.id);
+      const profileStillExists = profiles.some((item) => item.id === profile.id);
+      if (!profileStillExists || (profile.id !== activeProfileId && !runningDispatchState(profile.id))) return;
+      createView(profile);
+      if (profile.id === activeProfileId && !browserViewsSuspended) setActiveProfile(profile.id);
+    }, 250);
+  });
   view.webContents.loadURL(WHATSAPP_URL);
   views.set(profile.id, view);
-  // O WebContents das sessões inativas continua conectado e sem throttling,
-  // mas somente a sessão selecionada fica anexada ao compositor da janela.
+  // O WebContents das sessões inativas continua conectado com economia de
+  // renderização; a sessão visível e as que estão disparando ficam sem throttling.
   if (window && !browserViewsSuspended && profile.id === activeProfileId) {
     keepBrowserViewReady(window, view, activeViewBounds());
     resizeActiveView();
@@ -1446,6 +1595,7 @@ function createWindow() {
     transparent: false,
     hasShadow: true,
     backgroundColor: '#171719',
+    show: !startHidden,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -1458,6 +1608,11 @@ function createWindow() {
   });
   window.loadFile(path.join(__dirname, 'renderer', 'index.html'));
   window.on('resize', resizeActiveView);
+  window.on('close', (event) => {
+    if (isQuitting) return;
+    event.preventDefault();
+    hideMainWindowToTray();
+  });
 }
 
 ipcMain.handle('profiles:list', () => profiles.map(profileForPublic));
@@ -2070,10 +2225,7 @@ ipcMain.handle('profiles:remove', (_event, id) => {
   return { profiles: profiles.map(profileForPublic), activeProfileId };
 });
 
-app.whenReady().then(() => {
-  Menu.setApplicationMenu(Menu.buildFromTemplate(createApplicationMenuTemplate(app.getVersion(), {
-    onCheckForUpdates: () => appUpdaterController?.checkForUpdates({ manual: true })
-  })));
+if (hasSingleInstanceLock) app.whenReady().then(() => {
   profiles = loadProfiles();
   templates = loadTemplates();
   labelsData = loadLabels();
@@ -2081,7 +2233,10 @@ app.whenReady().then(() => {
   dispatchHistory = loadDispatchHistory();
   campaignStore = new CampaignStore(path.join(app.getPath('userData'), 'campaigns.db'));
   campaignStore.seedSentRegistry(dispatchHistory);
+  if (typeof settings.startWithWindows !== 'boolean') settings.startWithWindows = true;
   saveSettings();
+  syncWindowsStartup(app, settings.startWithWindows);
+  rebuildApplicationMenu();
   const templateMigration = applySemNomeVariantsMigration(templates, settings, () => crypto.randomUUID());
   templates = templateMigration.templates;
   settings = templateMigration.settings;
@@ -2103,6 +2258,7 @@ app.whenReady().then(() => {
       handleNotificationActivation(details);
     });
   }
+  createTray();
   createWindow();
   appUpdaterController = createAppUpdater({
     autoUpdater,
@@ -2113,17 +2269,27 @@ app.whenReady().then(() => {
   });
   appUpdaterController.start();
   preloadProfiles(profiles, { createView, setActiveProfile });
+  if (startHidden) {
+    hideActiveView();
+    window.hide();
+  }
+  startSurfaceHealthMonitor();
   scheduleNextDispatchCheck();
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
 });
 
+app.on('second-instance', () => showMainWindow());
+
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
 
 app.on('before-quit', () => {
+  isQuitting = true;
+  clearInterval(surfaceHealthTimer);
+  surfaceHealthTimer = null;
   appUpdaterController?.stop();
   campaignStore?.close();
   campaignStore = null;
