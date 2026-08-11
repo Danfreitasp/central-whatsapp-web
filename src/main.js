@@ -12,7 +12,15 @@ const {
   isDispatchProfileLocked,
   canStartDispatchForProfile
 } = require('./dispatch-control');
-const { MAX_SCHEDULED_DISPATCHES, validateScheduledAt, nextScheduleDelay } = require('./dispatch-scheduler');
+const {
+  MAX_SCHEDULED_DISPATCHES,
+  validateScheduledAt,
+  nextScheduleDelay,
+  scheduledProfileIds,
+  scheduleHasBusyProfile,
+  selectDueSchedule,
+  startScheduledDispatch
+} = require('./dispatch-scheduler');
 const { normalizeDispatchFailures, createDispatchFailuresCsv } = require('./dispatch-failures');
 const { MAX_DISPATCH_HISTORY, mergeDispatchHistory, filterDispatchHistory, createDispatchHistoryCsv } = require('./dispatch-history');
 const { preloadProfiles } = require('./profile-preload');
@@ -179,7 +187,9 @@ function saveDispatchHistory() {
 function loadScheduledDispatches() {
   try {
     const saved = JSON.parse(fs.readFileSync(scheduledDispatchesPath(), 'utf8'));
-    return Array.isArray(saved) ? saved.filter((item) => item?.id && item?.profileId && item?.scheduledAt && item?.input) : [];
+    return Array.isArray(saved)
+      ? saved.filter((item) => item?.id && scheduledProfileIds(item).length && item?.scheduledAt && item?.input)
+      : [];
   } catch {
     return [];
   }
@@ -687,11 +697,19 @@ function publishDistributionState(distribution) {
 }
 
 function scheduledDispatchForPublic(item) {
-  const profile = profiles.find((candidate) => candidate.id === item.profileId);
+  const profileIds = scheduledProfileIds(item);
+  const profileNames = profileIds.map((profileId) => (
+    profiles.find((candidate) => candidate.id === profileId)?.name
+      || (profileId === item.profileId ? item.profileName : '')
+      || 'Número removido'
+  ));
   return {
     id: item.id,
-    profileId: item.profileId,
-    profileName: profile?.name || item.profileName || 'Número removido',
+    type: item.type === 'distribution' ? 'distribution' : 'single',
+    profileId: item.profileId || profileIds[0] || '',
+    profileIds,
+    profileName: item.type === 'distribution' ? profileNames.join(', ') : profileNames[0],
+    profileNames,
     scheduledAt: item.scheduledAt,
     createdAt: item.createdAt,
     leadCount: Array.isArray(item.input?.leads) ? item.input.leads.length : 0,
@@ -721,35 +739,44 @@ function scheduleNextDispatchCheck() {
 function checkScheduledDispatches() {
   scheduledDispatchTimer = null;
   const now = Date.now();
-  const dueItems = scheduledDispatches
-    .filter((item) => ['pending', 'waiting'].includes(item.status || 'pending') && Date.parse(item.scheduledAt) <= now)
-    .sort((a, b) => Date.parse(a.scheduledAt) - Date.parse(b.scheduledAt));
-  const due = dueItems.find((item) => !runningDispatchState(item.profileId)) || dueItems[0];
+  const scheduleBlocked = (item) => {
+    if (scheduleHasBusyProfile(item, (profileId) => Boolean(runningDispatchState(profileId)))) return true;
+    const campaignId = String(item?.input?.campaignId || '');
+    return Boolean(campaignId && [...dispatchStates.values()].some((state) => state.running && state.campaignId === campaignId));
+  };
+  const due = selectDueSchedule(scheduledDispatches, now, scheduleBlocked);
 
   if (!due) {
     scheduleNextDispatchCheck();
     return;
   }
 
-  if (runningDispatchState(due.profileId)) {
+  if (scheduleBlocked(due)) {
     due.status = 'waiting';
-    due.error = 'Aguardando o disparo atual terminar.';
+    due.error = due.type === 'distribution'
+      ? 'Aguardando os números selecionados ficarem disponíveis.'
+      : 'Aguardando o disparo atual terminar.';
     saveScheduledDispatches();
     publishScheduledDispatches();
     scheduledDispatchTimer = setTimeout(checkScheduledDispatches, 15_000);
     return;
   }
 
-  const result = startDispatchInternal(due.input, due.profileId);
+  const result = startScheduledDispatch(due, {
+    startDistribution: startDistributionInternal,
+    startSingle: startDispatchInternal
+  });
   if (result.ok) {
     scheduledDispatches = scheduledDispatches.filter((item) => item.id !== due.id);
     saveScheduledDispatches();
     publishScheduledDispatches();
     publishDispatch('dispatch:schedule-triggered', {
       id: due.id,
-      profileName: result.profileName,
+      type: due.type === 'distribution' ? 'distribution' : 'single',
+      profileName: due.type === 'distribution' ? scheduledDispatchForPublic(due).profileName : result.profileName,
       scheduledAt: due.scheduledAt,
-      state: result.state
+      state: result.state || null,
+      distribution: result.distribution || null
     });
   } else {
     due.status = 'failed';
@@ -2003,8 +2030,13 @@ ipcMain.handle('dispatch:schedule', (_event, input) => {
   if (scheduledDispatches.filter((item) => item.status !== 'failed').length >= MAX_SCHEDULED_DISPATCHES) {
     return { ok: false, error: `Limite de ${MAX_SCHEDULED_DISPATCHES} agendamentos pendentes atingido.` };
   }
-  const profile = profiles.find((item) => item.id === input?.profileId);
-  if (!profile) return { ok: false, error: 'O número selecionado não foi encontrado.' };
+  const scheduleType = input?.type === 'distribution' ? 'distribution' : 'single';
+  const requestedProfileIds = scheduleType === 'distribution'
+    ? [...new Set((Array.isArray(input?.profileIds) ? input.profileIds : []).map(String).filter(Boolean))]
+    : [String(input?.profileId || '')].filter(Boolean);
+  if (!requestedProfileIds.length) return { ok: false, error: 'Selecione pelo menos um número do WhatsApp.' };
+  const selectedProfiles = requestedProfileIds.map((profileId) => profiles.find((item) => item.id === profileId));
+  if (selectedProfiles.some((profile) => !profile)) return { ok: false, error: 'Um dos números selecionados não foi encontrado.' };
   const date = validateScheduledAt(input?.scheduledAt);
   if (!date.ok) return date;
 
@@ -2022,10 +2054,30 @@ ipcMain.handle('dispatch:schedule', (_event, input) => {
     return { ok: false, error: error.message || String(error) };
   }
 
+  const campaignId = String(input?.campaignId || '').trim().slice(0, 80);
+  const successTarget = Math.max(0, Math.min(MAX_DISPATCH_CONTACTS, Number(input?.successTarget) || 0));
+  let scheduledSuccessTarget = successTarget;
+  const distributionMode = input?.distributionMode === 'custom' ? 'custom' : 'balanced';
+  const profileTargets = {};
+  if (scheduleType === 'distribution') {
+    if (!campaignId) return { ok: false, error: 'Selecione uma campanha para agendar a distribuição.' };
+    scheduledSuccessTarget = Math.max(1, Math.min(leads.length, successTarget || 50));
+    if (distributionMode === 'custom') {
+      for (const profileId of requestedProfileIds) {
+        profileTargets[profileId] = Math.max(0, Number(input?.profileTargets?.[profileId]) || 0);
+        if (!profileTargets[profileId]) return { ok: false, error: 'Informe uma cota maior que zero para cada número selecionado.' };
+      }
+      const targetSum = Object.values(profileTargets).reduce((sum, value) => sum + value, 0);
+      if (targetSum !== scheduledSuccessTarget) return { ok: false, error: `A soma das cotas deve ser igual à meta global de ${scheduledSuccessTarget}.` };
+    }
+  }
+
   const item = {
     id: crypto.randomUUID(),
-    profileId: profile.id,
-    profileName: profile.name,
+    type: scheduleType,
+    profileId: selectedProfiles[0].id,
+    profileIds: requestedProfileIds,
+    profileName: selectedProfiles[0].name,
     scheduledAt: date.iso,
     createdAt: new Date().toISOString(),
     status: 'pending',
@@ -2037,8 +2089,14 @@ ipcMain.handle('dispatch:schedule', (_event, input) => {
       senderName: String(input?.senderName || '').trim().slice(0, 80),
       delaySec: Math.min(120, Math.max(3, Number(input?.delaySec) || 12)),
       jitter: input?.jitter !== false,
-      campaignId: String(input?.campaignId || '').trim().slice(0, 80),
-      successTarget: Math.max(0, Math.min(MAX_DISPATCH_CONTACTS, Number(input?.successTarget) || 0))
+      campaignId,
+      successTarget: scheduledSuccessTarget,
+      ...(scheduleType === 'distribution' ? {
+        mode: input?.mode === 'errors' ? 'errors' : 'pending',
+        profileIds: requestedProfileIds,
+        distributionMode,
+        profileTargets
+      } : {})
     }
   };
   scheduledDispatches.push(item);

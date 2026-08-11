@@ -17,6 +17,7 @@ const leads = Array.from({ length: 8 }, (_, index) => ({
   opportunities: { available: {}, won: {} }
 }));
 let lastDistributionInput = null;
+let lastScheduledInput = null;
 let dispatchDoneCallback = null;
 let distributionDoneCallback = null;
 
@@ -41,6 +42,19 @@ contextBridge.exposeInMainWorld('centralWhatsApp', {
   removeCampaign: async () => [],
   exportCampaign: async () => ({ ok: true }),
   listScheduledDispatches: async () => [],
+  scheduleDispatch: async (input) => {
+    lastScheduledInput = input;
+    return {
+      ok: true,
+      schedule: {
+        id: 'schedule-1', type: input.type, profileIds: input.profileIds,
+        profileName: input.profileIds.map((id) => profiles.find((profile) => profile.id === id)?.name).join(', '),
+        scheduledAt: input.scheduledAt, leadCount: input.leads.length, status: 'pending'
+      },
+      schedules: []
+    };
+  },
+  cancelScheduledDispatch: async () => [],
   getDispatchState: async (profileId) => ({ profileId, running: false, paused: false, sending: false, done: 0, total: 0, sent: 0, errors: 0 }),
   getDispatchStates: async () => [],
   listDistributions: async () => [],
@@ -70,6 +84,7 @@ contextBridge.exposeInMainWorld('centralWhatsApp', {
   onDistributionStateChanged: () => {}, onDistributionDone: (callback) => { distributionDoneCallback = callback; },
   onDispatchHistoryChanged: () => {}, onCampaignsChanged: () => {},
   getLastDistributionInput: () => lastDistributionInput,
+  getLastScheduledInput: () => lastScheduledInput,
   simulateRestrictedWorker: () => dispatchDoneCallback?.({
     profileId: 'vermelho',
     distributionId: 'dist-1',

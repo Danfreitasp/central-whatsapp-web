@@ -19,8 +19,40 @@ function nextScheduleDelay(schedules, now = Date.now()) {
   return Math.max(1_000, Math.min(2_147_000_000, Math.min(...timestamps) - now));
 }
 
+function scheduledProfileIds(schedule) {
+  const ids = schedule?.type === 'distribution'
+    ? schedule?.profileIds
+    : [schedule?.profileId];
+  return [...new Set((Array.isArray(ids) ? ids : []).map(String).filter(Boolean))];
+}
+
+function scheduleHasBusyProfile(schedule, isProfileBusy) {
+  if (typeof isProfileBusy !== 'function') return false;
+  return scheduledProfileIds(schedule).some((profileId) => isProfileBusy(profileId));
+}
+
+function selectDueSchedule(schedules, now = Date.now(), isBlocked = () => false) {
+  const dueItems = (Array.isArray(schedules) ? schedules : [])
+    .filter((item) => ['pending', 'waiting'].includes(item?.status || 'pending') && Date.parse(item?.scheduledAt) <= now)
+    .sort((a, b) => Date.parse(a.scheduledAt) - Date.parse(b.scheduledAt));
+  return dueItems.find((item) => !isBlocked(item)) || dueItems[0] || null;
+}
+
+function startScheduledDispatch(schedule, handlers = {}) {
+  if (schedule?.type === 'distribution') {
+    if (typeof handlers.startDistribution !== 'function') throw new TypeError('startDistribution é obrigatório.');
+    return handlers.startDistribution(schedule.input);
+  }
+  if (typeof handlers.startSingle !== 'function') throw new TypeError('startSingle é obrigatório.');
+  return handlers.startSingle(schedule?.input, schedule?.profileId);
+}
+
 module.exports = {
   MAX_SCHEDULED_DISPATCHES,
   validateScheduledAt,
-  nextScheduleDelay
+  nextScheduleDelay,
+  scheduledProfileIds,
+  scheduleHasBusyProfile,
+  selectDueSchedule,
+  startScheduledDispatch
 };

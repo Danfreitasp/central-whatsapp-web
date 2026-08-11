@@ -640,7 +640,9 @@ function renderScheduledDispatches() {
   for (const schedule of scheduledDispatches) {
     const item = document.createElement('li');
     const title = document.createElement('strong');
-    title.textContent = `${schedule.profileName} · ${schedule.leadCount} telefone(s)`;
+    title.textContent = schedule.type === 'distribution'
+      ? `Distribuição · ${schedule.profileName} · ${schedule.leadCount} telefone(s)`
+      : `${schedule.profileName} · ${schedule.leadCount} telefone(s)`;
     const detail = document.createElement('span');
     detail.textContent = new Date(schedule.scheduledAt).toLocaleString('pt-BR');
     const remove = document.createElement('button');
@@ -655,7 +657,7 @@ function renderScheduledDispatches() {
     if (schedule.status === 'waiting' || schedule.status === 'failed') {
       const status = document.createElement('em');
       status.textContent = schedule.status === 'waiting'
-        ? 'Aguardando o lote atual terminar.'
+        ? (schedule.error || 'Aguardando o lote atual terminar.')
         : `Não iniciado: ${schedule.error || 'erro desconhecido'}`;
       item.append(status);
     }
@@ -869,10 +871,9 @@ function updateDispatchButtons() {
     || (dispatchDistributionMode && (!selectedProfiles.length || !customDistributionQuotasValid()));
   dispatchElements.schedule.disabled = dispatchRunning || !dispatchLeads.length
     || !dispatchHasValidMessage() || !dispatchElements.scheduledAt.value
-    || (dispatchDistributionMode && selectedProfiles.length > 1);
-  dispatchElements.schedule.title = dispatchDistributionMode && selectedProfiles.length > 1
-    ? 'O agendamento com vários números será disponibilizado em uma próxima etapa.'
-    : '';
+    || (dispatchDistributionMode && (!selectedProfiles.length || !customDistributionQuotasValid()));
+  dispatchElements.schedule.textContent = dispatchDistributionMode ? 'Agendar distribuição' : 'Agendar';
+  dispatchElements.schedule.title = '';
   dispatchElements.stop.disabled = !dispatchRunning;
   dispatchElements.pause.disabled = !dispatchRunning;
   dispatchElements.pause.textContent = dispatchPaused ? 'Continuar' : 'Pausar';
@@ -1367,9 +1368,11 @@ async function scheduleCentralDispatch() {
   if (!dispatchLeads.length || !dispatchHasValidMessage() || !dispatchElements.scheduledAt.value) return;
   saveDispatchPreferences();
   const scheduledAt = new Date(dispatchElements.scheduledAt.value);
-  const scheduledProfileId = dispatchDistributionMode ? selectedDistributionProfileIds()[0] : activeProfileId;
+  const scheduledProfileIds = dispatchDistributionMode ? selectedDistributionProfileIds() : [];
   const response = await window.centralWhatsApp.scheduleDispatch({
-    profileId: scheduledProfileId,
+    type: dispatchDistributionMode ? 'distribution' : 'single',
+    profileId: dispatchDistributionMode ? scheduledProfileIds[0] : activeProfileId,
+    profileIds: scheduledProfileIds,
     scheduledAt: scheduledAt.toISOString(),
     leads: dispatchLeadsWithMessages(),
     template: dispatchUsesVariants() ? selectedDispatchVariants()[0].body : dispatchElements.message.value,
@@ -1378,6 +1381,9 @@ async function scheduleCentralDispatch() {
     delaySec: Math.max(3, Number(dispatchElements.delay.value) || 12),
     jitter: dispatchElements.jitter.checked,
     campaignId: dispatchCampaignId,
+    mode: dispatchCampaignMode,
+    distributionMode: dispatchDistributionMode ? dispatchElements.distributionMode.value : 'balanced',
+    profileTargets: dispatchDistributionMode ? selectedDistributionTargets() : {},
     successTarget: dispatchSuccessTarget
   });
   if (!response?.ok) {
@@ -1386,7 +1392,7 @@ async function scheduleCentralDispatch() {
   }
   scheduledDispatches = response.schedules;
   renderScheduledDispatches();
-  addDispatchLog(`Lote agendado para ${new Date(response.schedule.scheduledAt).toLocaleString('pt-BR')} em ${response.schedule.profileName}.`, 'ok');
+  addDispatchLog(`Agendamento salvo para ${new Date(response.schedule.scheduledAt).toLocaleString('pt-BR')} em ${response.schedule.profileName}.`, 'ok');
   setDispatchStatus('Agendamento salvo. A lista e a mensagem foram armazenadas localmente.');
   prepareScheduleDateInput();
 }
@@ -1498,7 +1504,21 @@ window.centralWhatsApp.onScheduledDispatchesChanged((items) => {
   renderScheduledDispatches();
 });
 
-window.centralWhatsApp.onScheduledDispatchTriggered(({ profileName, state }) => {
+window.centralWhatsApp.onScheduledDispatchTriggered(({ type, profileName, state, distribution }) => {
+  if (type === 'distribution' && distribution) {
+    mergeDistribution(distribution);
+    focusedDistributionId = distribution.id;
+    for (const worker of distribution.workers) applyDispatchRuntimeState(worker, false);
+    dispatchRunning = true;
+    dispatchProfileId = distribution.workers[0]?.profileId || activeProfileId;
+    dispatchElements.dialog.classList.add('distribution-running');
+    renderDistributionDashboard();
+    updateDispatchHeader();
+    addDispatchLog(`Distribuição agendada iniciada automaticamente em ${profileName}.`, 'ok');
+    setDispatchStatus(`Distribuição agendada iniciada · Meta: 0 de ${distribution.target} envio(s) efetivo(s).`, 0, distribution.target);
+    return;
+  }
+  if (!state) return;
   const focused = state.profileId === dispatchProfileId;
   applyDispatchRuntimeState(state, focused);
   dispatchFailureReports.delete(state.profileId);

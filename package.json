@@ -1,6 +1,6 @@
 {
   "name": "central-whatsapp-web",
-  "version": "0.10.14",
+  "version": "0.10.15",
   "description": "Central local de múltiplas sessões do WhatsApp Web com disparos por planilha ou lista",
   "main": "src/main.js",
   "scripts": {

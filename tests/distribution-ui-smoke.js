@@ -51,6 +51,11 @@ app.whenReady().then(async () => {
     quotas[0].dispatchEvent(new Event('input'));
     quotas[1].value = '3';
     quotas[1].dispatchEvent(new Event('input'));
+    const scheduleButton = document.querySelector('#dispatch-schedule');
+    const scheduleEnabled = !scheduleButton.disabled;
+    scheduleButton.click();
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    const scheduledInput = window.centralWhatsApp.getLastScheduledInput();
     document.querySelector('#dispatch-start').click();
     await new Promise((resolve) => setTimeout(resolve, 120));
     const input = window.centralWhatsApp.getLastDistributionInput();
@@ -70,6 +75,8 @@ app.whenReady().then(async () => {
       campaignId: input.campaignId,
       distributionMode: input.distributionMode,
       targets: input.profileTargets,
+      scheduleEnabled,
+      scheduledInput,
       reopenedAsSingle,
       singleMode,
       campaignPickerVisible,
@@ -85,6 +92,11 @@ app.whenReady().then(async () => {
   assert.equal(result.campaignId, 'campanha-1');
   assert.equal(result.distributionMode, 'custom');
   assert.deepEqual(result.targets, { vermelho: 2, azul: 3 });
+  assert.equal(result.scheduleEnabled, true);
+  assert.equal(result.scheduledInput.type, 'distribution');
+  assert.deepEqual(result.scheduledInput.profileIds, ['vermelho', 'azul']);
+  assert.equal(result.scheduledInput.distributionMode, 'custom');
+  assert.deepEqual(result.scheduledInput.profileTargets, { vermelho: 2, azul: 3 });
   assert.equal(result.reopenedAsSingle, true);
   assert.deepEqual(result.singleMode, {
     active: true,
