@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const {
   notificationLaunchArgument,
   profileIdFromNotificationActivation,
+  notificationTargetFromActivation,
   resolveNotificationProfileId,
   profileIdFromActivatedViews,
   createProfileNotificationToast,
@@ -10,8 +11,12 @@ const {
 } = require('../src/notification-routing');
 
 test('grava e recupera o perfil nos argumentos da notificação', () => {
-  const argument = notificationLaunchArgument('perfil vermelho/1');
+  const argument = notificationLaunchArgument('perfil vermelho/1', '5511999999999@c.us');
   assert.equal(profileIdFromNotificationActivation(argument), 'perfil vermelho/1');
+  assert.deepEqual(notificationTargetFromActivation(argument), {
+    profileId: 'perfil vermelho/1',
+    chatId: '5511999999999@c.us'
+  });
   assert.equal(profileIdFromNotificationActivation('argumento-do-whatsapp'), '');
 });
 
@@ -36,11 +41,15 @@ test('sincroniza apenas quando outra sessão recebeu foco ou foi movida ao topo'
   ], 'azul'), 'verde');
 });
 
-test('gera toast do Windows com perfil e texto XML seguro', () => {
-  const xml = createProfileNotificationToast({ id: 'vermelho', name: 'Pessoal & Empresa' }, 2);
-  assert.match(xml, /launch="central-whatsapp-profile=vermelho"/);
+test('gera toast do Windows com perfil, conversa e texto XML seguro', () => {
+  const xml = createProfileNotificationToast(
+    { id: 'vermelho', name: 'Pessoal & Empresa' },
+    2,
+    { id: '5511999999999@c.us', name: 'Cliente <Teste>' }
+  );
+  assert.match(xml, /launch="central-whatsapp-profile=vermelho&amp;chat=5511999999999%40c.us"/);
   assert.match(xml, /Pessoal &amp; Empresa/);
-  assert.match(xml, /2 mensagens não lidas/);
+  assert.match(xml, /Cliente &lt;Teste&gt;/);
 });
 
 test('configura o atalho com AppUserModelId e ToastActivatorCLSID correspondentes', () => {

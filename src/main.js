@@ -35,7 +35,14 @@ const {
   withTemporarilyAttachedBrowserView,
   isolateActiveBrowserView
 } = require('./browser-view-lifecycle');
-const { resolveNotificationProfileId, profileIdFromActivatedViews, createNotificationShortcutDetails } = require('./notification-routing');
+const {
+  resolveNotificationProfileId,
+  profileIdFromActivatedViews,
+  notificationTargetFromActivation,
+  createProfileNotificationToast,
+  createNotificationShortcutDetails
+} = require('./notification-routing');
+const { totalUnread, indicatorLabel, spriteCellForUnread, createOverlayBitmap, addUnreadBadge } = require('./notification-badge');
 const { CampaignStore, MAX_CAMPAIGN_CONTACTS, MAX_DISPATCH_CONTACTS } = require('./campaign-store');
 const { normalizeEffectiveTarget, effectiveTargetReached } = require('./dispatch-target');
 const { createWhatsAppUserAgent } = require('./whatsapp-user-agent');
@@ -60,7 +67,7 @@ const WHATSAPP_URL = 'https://web.whatsapp.com/';
 const WHATSAPP_USER_AGENT = createWhatsAppUserAgent(process.versions.chrome);
 const SIDEBAR_WIDTH = 252;
 const TOPBAR_HEIGHT = 56;
-const WHATSAPP_ALLOWED_PERMISSIONS = new Set(['media', 'notifications']);
+const WHATSAPP_ALLOWED_PERMISSIONS = new Set(['media']);
 const APP_USER_MODEL_ID = 'com.codex.centralwhatsappweb';
 const TOAST_ACTIVATOR_CLSID = '{7C52F4A5-C1B8-4A32-A901-3B3BFFDC5D30}';
 const WPP_CONNECT_PATH = path.join(__dirname, 'vendor', 'wppconnect-wa.js');
@@ -93,6 +100,10 @@ const views = new Map();
 let activeProfileId = null;
 const unreadByProfile = new Map();
 let pendingNotificationProfileId = null;
+let pendingNotificationChatId = null;
+const notificationReadyProfiles = new Set();
+const notificationRevisions = new Map();
+const activeNotifications = new Set();
 let wppConnectSource = null;
 const dispatchStates = new Map();
 const distributions = new Map();
@@ -101,6 +112,9 @@ let profileSwitchRevision = 0;
 let browserViewsSuspended = false;
 let appUpdaterController = null;
 let tray = null;
+let trayBaseIcon = null;
+let notificationBadgeIcon = null;
+let notificationCountsIcon = null;
 let isQuitting = false;
 let surfaceHealthTimer = null;
 const blankSurfaceStrikes = new Map();
@@ -300,11 +314,16 @@ function setStartWithWindows(enabled) {
 function createTray() {
   if (tray) return tray;
   const iconPath = path.join(__dirname, '..', 'assets', 'icon.png');
-  const icon = nativeImage.createFromPath(iconPath).resize({ width: 16, height: 16, quality: 'best' });
-  tray = new Tray(icon);
+  const badgePath = path.join(__dirname, '..', 'assets', 'notification-badge.png');
+  const countsPath = path.join(__dirname, '..', 'assets', 'notification-counts.png');
+  trayBaseIcon = nativeImage.createFromPath(iconPath).resize({ width: 16, height: 16, quality: 'best' });
+  notificationBadgeIcon = nativeImage.createFromPath(badgePath);
+  notificationCountsIcon = nativeImage.createFromPath(countsPath);
+  tray = new Tray(trayBaseIcon);
   tray.setToolTip('Central WhatsApp Web');
   tray.on('click', showMainWindow);
   rebuildTrayMenu();
+  syncUnreadIndicators();
   return tray;
 }
 
@@ -423,9 +442,141 @@ function unreadFromTitle(title) {
   return match ? Number(match[1]) : 0;
 }
 
-function publishUnread(profileId, unread) {
-  unreadByProfile.set(profileId, unread);
+function syncUnreadIndicators() {
+  const unread = totalUnread(unreadByProfile.values());
+  const label = indicatorLabel(unread);
+  if (window && !window.isDestroyed() && process.platform === 'win32') {
+    let overlay = null;
+    if (unread > 0) {
+      if (notificationCountsIcon && !notificationCountsIcon.isEmpty()) {
+        overlay = notificationCountsIcon.crop(spriteCellForUnread(unread)).resize({ width: 16, height: 16, quality: 'best' });
+      } else {
+        const sourceSize = 64;
+        const badge = notificationBadgeIcon?.resize({ width: sourceSize, height: sourceSize, quality: 'best' });
+        overlay = nativeImage.createFromBitmap(
+          createOverlayBitmap(unread, sourceSize, badge?.toBitmap()),
+          { width: sourceSize, height: sourceSize, scaleFactor: 1 }
+        ).resize({ width: 16, height: 16, quality: 'best' });
+      }
+    }
+    window.setOverlayIcon(overlay, unread > 0 ? `${label} conversas não lidas` : 'Sem conversas não lidas');
+  }
+  if (process.platform !== 'win32' && typeof app.setBadgeCount === 'function') app.setBadgeCount(unread);
+  if (tray && trayBaseIcon && !trayBaseIcon.isEmpty()) {
+    if (unread > 0) {
+      const size = trayBaseIcon.getSize();
+      const badgeSize = Math.max(7, Math.round(Math.min(size.width, size.height) * 0.5));
+      const badge = notificationBadgeIcon?.resize({ width: badgeSize, height: badgeSize, quality: 'best' });
+      const bitmap = addUnreadBadge(
+        trayBaseIcon.toBitmap(),
+        size.width,
+        size.height,
+        badge?.toBitmap(),
+        badgeSize,
+        badgeSize
+      );
+      tray.setImage(nativeImage.createFromBitmap(bitmap, { ...size, scaleFactor: 1 }));
+      tray.setToolTip(`Central WhatsApp Web — ${label} não lidas`);
+    } else {
+      tray.setImage(trayBaseIcon);
+      tray.setToolTip('Central WhatsApp Web');
+    }
+  }
+}
+
+function shouldShowUnreadNotification(profileId) {
+  if (!window || window.isDestroyed()) return true;
+  return !window.isVisible() || window.isMinimized() || !window.isFocused() || profileId !== activeProfileId;
+}
+
+async function newestUnreadChat(view) {
+  await ensureWhatsAppBridge(view);
+  return view.webContents.executeJavaScript(`
+    (async () => {
+      const chats = await globalThis.WPP.chat.list({ onlyWithUnreadMessage: true, ignoreGroupMetadata: true });
+      return chats.map((chat) => ({
+        id: String(chat?.id?._serialized || chat?.id || ''),
+        name: String(chat?.formattedTitle || chat?.name || chat?.contact?.formattedName || chat?.contact?.name || ''),
+        unread: Number(chat?.unreadCount) || 0,
+        timestamp: Number(chat?.t || chat?.timestamp || chat?.lastReceivedKey?.t) || 0
+      })).filter((chat) => chat.id).sort((a, b) => (b.timestamp - a.timestamp) || (b.unread - a.unread))[0] || null;
+    })()
+  `, true);
+}
+
+async function openNotificationChat(profileId, chatId) {
+  const profile = profiles.find((item) => item.id === profileId);
+  if (!profile || !chatId) return false;
+  const view = createView(profile);
+  try {
+    await ensureWhatsAppBridge(view);
+    const opened = await view.webContents.executeJavaScript(`
+      (async () => {
+        const chatId = ${JSON.stringify(chatId)};
+        try {
+          if (await globalThis.WPP.chat.openChatFromUnread(chatId)) return true;
+        } catch {}
+        try { return Boolean(await globalThis.WPP.chat.openChatBottom(chatId, 'Chatlist')); } catch { return false; }
+      })()
+    `, true);
+    view.webContents.focus();
+    return Boolean(opened);
+  } catch (error) {
+    console.warn(`[Central WhatsApp] Não foi possível abrir a conversa da notificação no perfil ${profileId}:`, error);
+    return false;
+  }
+}
+
+function activateNotificationTarget(profileId, chatId = '') {
+  if (!window || window.isDestroyed()) {
+    pendingNotificationProfileId = profileId;
+    pendingNotificationChatId = chatId;
+    return true;
+  }
+  const activated = activateProfile(profileId);
+  if (activated && chatId) void openNotificationChat(profileId, chatId);
+  return activated;
+}
+
+async function showUnreadNotification(profileId, unread, revision) {
+  const profile = profiles.find((item) => item.id === profileId);
+  const view = views.get(profileId);
+  if (!profile || !view || view.webContents.isDestroyed() || !Notification.isSupported()) return;
+  let chat = null;
+  try {
+    chat = await newestUnreadChat(view);
+  } catch (error) {
+    console.warn(`[Central WhatsApp] Não foi possível identificar a conversa não lida do perfil ${profileId}:`, error);
+  }
+  if (notificationRevisions.get(profileId) !== revision || (unreadByProfile.get(profileId) || 0) <= 0) return;
+  const title = `WhatsApp — ${profile.name || 'Número'}`;
+  const body = chat?.name || (unread === 1 ? 'Você tem 1 conversa não lida.' : `Você tem ${unread} conversas não lidas.`);
+  const options = process.platform === 'win32'
+    ? { toastXml: createProfileNotificationToast(profile, unread, chat || {}) }
+    : { title, body, icon: path.join(__dirname, '..', 'assets', 'icon.png') };
+  const notification = new Notification(options);
+  activeNotifications.add(notification);
+  if (process.platform !== 'win32') {
+    notification.once('click', () => {
+      activeNotifications.delete(notification);
+      activateNotificationTarget(profileId, chat?.id || '');
+    });
+  }
+  notification.once('close', () => activeNotifications.delete(notification));
+  notification.show();
+}
+
+function publishUnread(profileId, unread, { allowNotification = true } = {}) {
+  const normalized = Math.max(0, Number(unread) || 0);
+  const previous = unreadByProfile.get(profileId) || 0;
+  unreadByProfile.set(profileId, normalized);
+  syncUnreadIndicators();
   if (window && !window.isDestroyed()) window.webContents.send('profiles:unread-changed', { profileId, unread });
+  if (allowNotification && notificationReadyProfiles.has(profileId) && normalized > previous && shouldShowUnreadNotification(profileId)) {
+    const revision = (notificationRevisions.get(profileId) || 0) + 1;
+    notificationRevisions.set(profileId, revision);
+    void showUnreadNotification(profileId, normalized, revision);
+  }
 }
 
 function activateProfile(profileId) {
@@ -470,8 +621,9 @@ function scheduleNativeNotificationProfileSync() {
 
 function handleNotificationActivation(details) {
   const rawArguments = String(details?.arguments || '');
+  const target = notificationTargetFromActivation(rawArguments);
   const profileId = resolveNotificationProfileId(rawArguments, profiles.map((profile) => profile.id));
-  if (profileId) return activateProfile(profileId);
+  if (profileId) return activateNotificationTarget(profileId, target.profileId === profileId ? target.chatId : '');
   scheduleNativeNotificationProfileSync();
   return false;
 }
@@ -1551,11 +1703,12 @@ function createView(profile) {
   const existingView = views.get(profile.id);
   if (existingView && !existingView.webContents.isDestroyed()) return existingView;
   if (existingView) views.delete(profile.id);
+  notificationReadyProfiles.delete(profile.id);
 
   const partition = `persist:whatsapp-profile-${profile.id}`;
   const profileSession = session.fromPartition(partition);
-  // Necessárias para áudio/vídeo e avisos de novas mensagens. As demais
-  // permissões continuam recusadas por padrão.
+  // O aplicativo mantém mídia liberada. As notificações Web do WhatsApp ficam
+  // recusadas porque geramos toasts próprios com perfil e conversa no clique.
   profileSession.setPermissionCheckHandler((_webContents, permission) => WHATSAPP_ALLOWED_PERMISSIONS.has(permission));
   profileSession.setPermissionRequestHandler((_webContents, permission, callback) => {
     callback(WHATSAPP_ALLOWED_PERMISSIONS.has(permission));
@@ -1579,7 +1732,8 @@ function createView(profile) {
   });
   view.webContents.once('did-finish-load', () => {
     syncSessionResourcePolicy();
-    publishUnread(profile.id, unreadFromTitle(view.webContents.getTitle()));
+    publishUnread(profile.id, unreadFromTitle(view.webContents.getTitle()), { allowNotification: false });
+    notificationReadyProfiles.add(profile.id);
     syncLabelsToView(profile.id);
   });
   view.webContents.on('unresponsive', () => {
@@ -1631,10 +1785,17 @@ function createWindow() {
     }
   });
   window.webContents.once('did-finish-load', () => {
-    if (pendingNotificationProfileId) activateProfile(pendingNotificationProfileId);
+    if (pendingNotificationProfileId) {
+      const profileId = pendingNotificationProfileId;
+      const chatId = pendingNotificationChatId;
+      pendingNotificationProfileId = null;
+      pendingNotificationChatId = null;
+      activateNotificationTarget(profileId, chatId);
+    }
   });
   window.loadFile(path.join(__dirname, 'renderer', 'index.html'));
   window.on('resize', resizeActiveView);
+  window.on('show', syncUnreadIndicators);
   window.on('close', (event) => {
     if (isQuitting) return;
     event.preventDefault();
@@ -2272,6 +2433,9 @@ ipcMain.handle('profiles:remove', (_event, id) => {
     views.delete(profile.id);
   }
   unreadByProfile.delete(profile.id);
+  notificationReadyProfiles.delete(profile.id);
+  notificationRevisions.delete(profile.id);
+  syncUnreadIndicators();
   if (activeProfileId === id) {
     activeProfileId = profiles[0]?.id ?? null;
     if (activeProfileId) {

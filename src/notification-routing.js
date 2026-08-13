@@ -9,18 +9,29 @@ function escapeXml(value) {
     .replace(/'/g, '&apos;');
 }
 
-function notificationLaunchArgument(profileId) {
-  return `${NOTIFICATION_ARGUMENT_PREFIX}${encodeURIComponent(String(profileId || ''))}`;
+function notificationLaunchArgument(profileId, chatId = '') {
+  const profile = encodeURIComponent(String(profileId || ''));
+  const chat = String(chatId || '');
+  return `${NOTIFICATION_ARGUMENT_PREFIX}${profile}${chat ? `&chat=${encodeURIComponent(chat)}` : ''}`;
+}
+
+function notificationTargetFromActivation(argumentsValue) {
+  const raw = String(argumentsValue || '');
+  if (!raw.startsWith(NOTIFICATION_ARGUMENT_PREFIX)) return { profileId: '', chatId: '' };
+  const [encodedProfile, ...parameters] = raw.slice(NOTIFICATION_ARGUMENT_PREFIX.length).split('&');
+  try {
+    const chatParameter = parameters.find((parameter) => parameter.startsWith('chat='));
+    return {
+      profileId: decodeURIComponent(encodedProfile),
+      chatId: chatParameter ? decodeURIComponent(chatParameter.slice(5)) : ''
+    };
+  } catch {
+    return { profileId: '', chatId: '' };
+  }
 }
 
 function profileIdFromNotificationActivation(argumentsValue) {
-  const raw = String(argumentsValue || '');
-  if (!raw.startsWith(NOTIFICATION_ARGUMENT_PREFIX)) return '';
-  try {
-    return decodeURIComponent(raw.slice(NOTIFICATION_ARGUMENT_PREFIX.length));
-  } catch {
-    return '';
-  }
+  return notificationTargetFromActivation(argumentsValue).profileId;
 }
 
 function resolveNotificationProfileId(argumentsValue, profileIds) {
@@ -41,11 +52,12 @@ function profileIdFromActivatedViews(viewStates, activeProfileId) {
   return top ? String(top.id || '') : '';
 }
 
-function createProfileNotificationToast(profile, unread) {
+function createProfileNotificationToast(profile, unread, chat = {}) {
   const count = Math.max(1, Number(unread) || 1);
   const title = `WhatsApp — ${String(profile?.name || 'Número')}`;
-  const body = count === 1 ? 'Você tem 1 mensagem não lida.' : `Você tem ${count} mensagens não lidas.`;
-  const launch = notificationLaunchArgument(profile?.id);
+  const chatName = String(chat?.name || '').trim();
+  const body = chatName || (count === 1 ? 'Você tem 1 conversa não lida.' : `Você tem ${count} conversas não lidas.`);
+  const launch = notificationLaunchArgument(profile?.id, chat?.id);
   return `<toast launch="${escapeXml(launch)}"><visual><binding template="ToastGeneric"><text>${escapeXml(title)}</text><text>${escapeXml(body)}</text></binding></visual></toast>`;
 }
 
@@ -64,6 +76,7 @@ function createNotificationShortcutDetails(executablePath, appUserModelId, toast
 module.exports = {
   NOTIFICATION_ARGUMENT_PREFIX,
   notificationLaunchArgument,
+  notificationTargetFromActivation,
   profileIdFromNotificationActivation,
   resolveNotificationProfileId,
   profileIdFromActivatedViews,
