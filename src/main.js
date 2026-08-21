@@ -35,6 +35,7 @@ const {
   withTemporarilyAttachedBrowserView,
   isolateActiveBrowserView
 } = require('./browser-view-lifecycle');
+const { configureExternalNavigation } = require('./external-navigation');
 const {
   resolveNotificationProfileId,
   profileIdFromActivatedViews,
@@ -1725,7 +1726,11 @@ function createView(profile) {
   view.webContents.setUserAgent(WHATSAPP_USER_AGENT);
   view.webContents.setZoomFactor(profile.zoom || 1);
   view.webContents.setBackgroundThrottling(!(profile.id === activeProfileId || runningDispatchState(profile.id)));
-  view.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  configureExternalNavigation(view.webContents, {
+    internalOrigin: WHATSAPP_URL,
+    openExternal: (url) => shell.openExternal(url),
+    onError: (error) => console.warn('[Central WhatsApp] Não foi possível abrir o link externo:', error)
+  });
   view.webContents.on('page-title-updated', (_event, title) => {
     const unread = unreadFromTitle(title);
     publishUnread(profile.id, unread);
