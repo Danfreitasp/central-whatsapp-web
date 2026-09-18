@@ -4,6 +4,7 @@ const {
   isBrowserViewAttached,
   keepBrowserViewReady,
   refreshBrowserViewSurface,
+  rebindBrowserViewSurface,
   showBrowserView,
   withTemporarilyAttachedBrowserView,
   isolateActiveBrowserView
@@ -13,10 +14,17 @@ function fixture() {
   const attached = [];
   const calls = [];
   const window = {
-    getBrowserViews: () => [...attached],
-    addBrowserView: (view) => { attached.push(view); calls.push('attach'); },
-    removeBrowserView: (view) => { attached.splice(attached.indexOf(view), 1); calls.push('detach'); },
-    setTopBrowserView: () => calls.push('top')
+    webContents: {},
+    contentView: {
+      get children() { return [...attached]; },
+      addChildView: (view) => {
+        const index = attached.indexOf(view);
+        if (index >= 0) attached.splice(index, 1);
+        attached.push(view);
+        calls.push(index >= 0 ? 'top' : 'attach');
+      },
+      removeChildView: (view) => { attached.splice(attached.indexOf(view), 1); calls.push('detach'); }
+    }
   };
   const view = {
     setBounds: (bounds) => calls.push({ bounds }),
@@ -51,6 +59,25 @@ test('solicita um novo quadro sem recarregar a página', () => {
   const { calls, view } = fixture();
   assert.equal(refreshBrowserViewSurface(view), true);
   assert.deepEqual(calls, ['throttle:false', 'invalidate']);
+});
+
+test('reanexa a mesma sessão para recuperar o compositor sem recarregar', () => {
+  const { attached, calls, view, window } = fixture();
+  attached.push(view);
+  const bounds = { x: 252, y: 56, width: 1188, height: 844 };
+
+  assert.equal(rebindBrowserViewSurface(window, view, bounds), true);
+
+  assert.deepEqual(attached, [view]);
+  assert.deepEqual(calls, [
+    'detach',
+    'attach',
+    { bounds },
+    'top',
+    'throttle:false',
+    'invalidate',
+    'focus'
+  ]);
 });
 
 test('mantém somente a sessão ativa anexada ao compositor', () => {
@@ -120,4 +147,23 @@ test('anexa a sessão somente durante a captura e a remove mesmo quando há erro
 
   assert.equal(attached.includes(view), false);
   assert.deepEqual(calls, ['attach', { bounds }, 'top', 'detach']);
+});
+
+test('não remove após a captura uma sessão que se tornou ativa durante a operação', async () => {
+  const { attached, calls, view, window } = fixture();
+  const bounds = { x: 252, y: 56, width: 1188, height: 844 };
+  let becameActive = false;
+
+  await withTemporarilyAttachedBrowserView(
+    window,
+    view,
+    bounds,
+    async () => {
+      becameActive = true;
+    },
+    { shouldRemainAttached: () => becameActive }
+  );
+
+  assert.equal(attached.includes(view), true);
+  assert.deepEqual(calls, ['attach', { bounds }, 'top']);
 });

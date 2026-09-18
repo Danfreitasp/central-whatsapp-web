@@ -1,9 +1,24 @@
+// WebContentsView usa diretamente a árvore nativa de views. Evita o wrapper
+// BrowserView, que no Electron 43 acumula listeners 'closed' em cada reanexo.
+function getAttachedBrowserViews(window) {
+  if (!window || window.isDestroyed?.()) return [];
+  return window.contentView.children.filter(view => view.webContents !== window.webContents);
+}
+
+function attachBrowserView(window, view) {
+  window.contentView.addChildView(view);
+}
+
+function detachBrowserView(window, view) {
+  if (isBrowserViewAttached(window, view)) window.contentView.removeChildView(view);
+}
+
 function isBrowserViewAttached(window, view) {
-  return Boolean(window && view && window.getBrowserViews().includes(view));
+  return Boolean(window && view && getAttachedBrowserViews(window).includes(view));
 }
 
 function ensureBrowserViewAttached(window, view) {
-  if (!isBrowserViewAttached(window, view)) window.addBrowserView(view);
+  if (!isBrowserViewAttached(window, view)) attachBrowserView(window, view);
 }
 
 function keepBrowserViewReady(window, view, bounds) {
@@ -24,9 +39,38 @@ function refreshBrowserViewSurface(view) {
 function showBrowserView(window, view, bounds) {
   ensureBrowserViewAttached(window, view);
   view.setBounds({ ...bounds });
-  if (typeof window.setTopBrowserView === 'function') window.setTopBrowserView(view);
+  attachBrowserView(window, view);
   refreshBrowserViewSurface(view);
   if (view.webContents && !view.webContents.isDestroyed?.()) view.webContents.focus?.();
+}
+
+function rebindBrowserViewSurface(window, view, bounds, options = {}) {
+  const webContents = view?.webContents;
+  if (!window || !view || !webContents || webContents.isDestroyed?.()) return false;
+
+  // Recria somente o vínculo com o compositor. O WebContents e sua partição
+  // continuam os mesmos, preservando login, conversa aberta e texto digitado.
+  detachBrowserView(window, view);
+  attachBrowserView(window, view);
+  view.setBounds({ ...bounds });
+  attachBrowserView(window, view);
+  refreshBrowserViewSurface(view);
+  if (options.focus !== false) webContents.focus?.();
+  return true;
+}
+
+function repaintBrowserViewSurface(view, getCurrentBounds) {
+  const bounds = getCurrentBounds();
+  if (!bounds || bounds.width < 2 || view.webContents.isDestroyed()) return;
+  // Um novo tamanho força o compositor a produzir uma nova superfície. Usar
+  // dois turnos evita que o Chromium coalesça as duas alterações de tamanho.
+  view.setBounds({ ...bounds, width: bounds.width - 1 });
+  setTimeout(() => {
+    const currentBounds = getCurrentBounds();
+    if (!currentBounds || view.webContents.isDestroyed()) return;
+    view.setBounds({ ...currentBounds });
+    view.webContents.invalidate?.();
+  }, 32);
 }
 
 async function withTemporarilyAttachedBrowserView(window, view, bounds, operation, options = {}) {
@@ -39,9 +83,9 @@ async function withTemporarilyAttachedBrowserView(window, view, bounds, operatio
   if (!wasAlwaysOnTop) window.setAlwaysOnTop?.(true);
   window.moveTop?.();
   window.focus?.();
-  if (!wasAttached) window.addBrowserView(view);
+  if (!wasAttached) attachBrowserView(window, view);
   view.setBounds({ ...bounds });
-  if (typeof window.setTopBrowserView === 'function') window.setTopBrowserView(view);
+  attachBrowserView(window, view);
 
   // capturePage depende de a superfície do BrowserView estar anexada e já ter
   // produzido ao menos um quadro. Sem isso o Chromium pode aguardar para sempre.
@@ -51,7 +95,10 @@ async function withTemporarilyAttachedBrowserView(window, view, bounds, operatio
   try {
     return await operation();
   } finally {
-    if (!wasAttached && isBrowserViewAttached(window, view)) window.removeBrowserView(view);
+    const shouldRemainAttached = typeof options.shouldRemainAttached === 'function'
+      ? options.shouldRemainAttached()
+      : Boolean(options.shouldRemainAttached);
+    if (!wasAttached && !shouldRemainAttached) detachBrowserView(window, view);
     if (!wasAlwaysOnTop) window.setAlwaysOnTop?.(false);
   }
 }
@@ -64,18 +111,18 @@ function isolateActiveBrowserView(window, browserViews, activeView, activeBounds
   for (const view of browserViews || []) {
     if (!view) continue;
     if (view !== activeView) {
-      if (isBrowserViewAttached(window, view)) window.removeBrowserView(view);
+      detachBrowserView(window, view);
       continue;
     }
     if (!isBrowserViewAttached(window, view)) {
       if (!attach) continue;
-      window.addBrowserView(view);
+      attachBrowserView(window, view);
     }
     view.setBounds({ ...activeBounds });
   }
 
   if (!activeView || !isBrowserViewAttached(window, activeView)) return;
-  if (typeof window.setTopBrowserView === 'function') window.setTopBrowserView(activeView);
+  attachBrowserView(window, activeView);
   refreshBrowserViewSurface(activeView);
   if (focus && activeView.webContents && !activeView.webContents.isDestroyed?.()) {
     activeView.webContents.focus?.();
@@ -83,9 +130,14 @@ function isolateActiveBrowserView(window, browserViews, activeView, activeBounds
 }
 
 module.exports = {
+  getAttachedBrowserViews,
+  attachBrowserView,
+  detachBrowserView,
   isBrowserViewAttached,
   keepBrowserViewReady,
   refreshBrowserViewSurface,
+  rebindBrowserViewSurface,
+  repaintBrowserViewSurface,
   showBrowserView,
   withTemporarilyAttachedBrowserView,
   isolateActiveBrowserView

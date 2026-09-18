@@ -9,6 +9,9 @@ function bitmap(pixels) {
 test('reconhece superfícies uniformes pretas e cinzas', () => {
   assert.equal(isLikelyBlankBitmap(bitmap(Array(40).fill([4, 4, 4]))), true);
   assert.equal(isLikelyBlankBitmap(bitmap(Array(40).fill([128, 128, 128]))), true);
+  assert.equal(isLikelyBlankBitmap(bitmap(Array(40).fill([55, 55, 55]))), true);
+  assert.equal(isLikelyBlankBitmap(bitmap(Array(40).fill([17, 27, 33]))), true);
+  assert.equal(isLikelyBlankBitmap(Buffer.alloc(160)), true);
 });
 
 test('não confunde uma interface com variação visual com tela vazia', () => {

@@ -6,13 +6,38 @@ A versão instalada pode ser consultada no menu nativo **Help**.
 
 Na inicialização, o primeiro número aparece imediatamente e todas as outras
 sessões começam a carregar em paralelo. Assim, a primeira troca entre números
-não precisa iniciar o WhatsApp do zero. As telas inativas permanecem sempre
-conectadas à janela e são apenas ocultadas, sem recriar a superfície do
-WhatsApp a cada troca. As telas permanecem empilhadas no mesmo tamanho e apenas
-o número selecionado é trazido para a frente, impedindo que o Chromium descarte
-sua renderização. A troca reafirma a ordem visual sem atualizar o WhatsApp e
-confirma novamente a sessão escolhida após carregamentos paralelos. Não há modos
-de economia que descarreguem uma sessão.
+não precisa iniciar o WhatsApp do zero. Somente a tela do número selecionado
+fica anexada à janela; as outras sessões continuam conectadas em segundo plano.
+A troca preserva a página, a conversa e os rascunhos. Não há modos de economia
+que descarreguem uma sessão.
+
+## Tela cinza ou preta
+
+A versão 0.10.25 usa Electron 43.7.2, incluindo a correção de renderização de
+telas ocultas publicada no Electron 43.4.1
+([detalhes oficiais](https://releases.electronjs.org/pr/52844)). A recuperação
+usa `WebContentsView` diretamente, substituindo a camada antiga `BrowserView`
+e evitando acúmulo de listeners nas trocas de sessão. Ela
+reconecta a tela ativa e força um novo quadro sem recarregar o WhatsApp. Ela
+também atua ao restaurar a janela e retornar da suspensão do Windows.
+
+- **Help → Recuperar tela do WhatsApp**, ou **Ctrl+Alt+R**, permite solicitar
+  essa recuperação manualmente. O procedimento preserva o conteúdo da sessão.
+- **Configurações → Compatibilidade gráfica (após reiniciar)** desativa a
+  aceleração por hardware na próxima abertura. É uma alternativa para falhas
+  relacionadas à GPU/driver e pode aumentar o uso de CPU. Encerre pela bandeja
+  em **Sair** e abra novamente para aplicar; desmarque para voltar ao padrão.
+- **Help → Abrir diagnóstico de tela** abre registros locais de falhas de
+  captura, recuperação, encerramento de renderer/GPU e memória disponível.
+  Os registros não incluem mensagens, telefones, capturas ou nomes de perfis,
+  e têm rotação limitada a aproximadamente 1 MB no total.
+
+O monitor ignora resultados de capturas que ficaram obsoletos após trocas,
+minimização ou abertura de painéis; não intervém em perfis com disparos ativos.
+Uma captura que falha ou retorna cinza não provoca reload automático. Se o
+processo da sessão encerrar, a Central recria a sessão na mesma partição local.
+A eliminação de falhas intermitentes precisa ser confirmada em uso prolongado;
+os registros ajudam a distinguir a causa caso o sintoma volte.
 
 ## Disparos
 

@@ -2,6 +2,12 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('centralWhatsApp', {
   listProfiles: () => ipcRenderer.invoke('profiles:list'),
+  searchAllConversations: (input) => ipcRenderer.invoke('global-search:run', input),
+  cancelGlobalSearch: () => ipcRenderer.invoke('global-search:cancel'),
+  openGlobalSearchResult: (result) => ipcRenderer.invoke('global-search:open', result),
+  getGlobalSearchIndexStatus: () => ipcRenderer.invoke('global-search:index-status'),
+  rebuildGlobalSearchIndex: () => ipcRenderer.invoke('global-search:rebuild-index'),
+  clearGlobalSearchIndex: () => ipcRenderer.invoke('global-search:clear-index'),
   backupConversation: (profileId) => ipcRenderer.invoke('conversation-backup:create', profileId),
   cancelConversationBackup: (profileId) => ipcRenderer.invoke('conversation-backup:cancel', profileId),
   listTemplates: () => ipcRenderer.invoke('templates:list'),
@@ -46,6 +52,7 @@ contextBridge.exposeInMainWorld('centralWhatsApp', {
   removeProfile: (id) => ipcRenderer.invoke('profiles:remove', id),
   onUnreadChanged: (callback) => ipcRenderer.on('profiles:unread-changed', (_event, data) => callback(data)),
   onProfileActivated: (callback) => ipcRenderer.on('profiles:activated', (_event, data) => callback(data)),
+  onGlobalSearchProgress: (callback) => ipcRenderer.on('global-search:progress', (_event, data) => callback(data)),
   onDispatchProgress: (callback) => ipcRenderer.on('dispatch:progress', (_event, data) => callback(data)),
   onDispatchStateChanged: (callback) => ipcRenderer.on('dispatch:state-changed', (_event, data) => callback(data)),
   onScheduledDispatchesChanged: (callback) => ipcRenderer.on('dispatch:schedules-changed', (_event, data) => callback(data)),

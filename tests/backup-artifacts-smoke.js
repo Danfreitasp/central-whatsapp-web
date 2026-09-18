@@ -1,16 +1,16 @@
-const { app, BrowserWindow, BrowserView, nativeImage } = require('electron');
+const { app, BrowserWindow, WebContentsView, nativeImage } = require('electron');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const AdmZip = require('adm-zip');
 const { captureWhatsAppConversation } = require('../src/whatsapp-conversation-capture');
-const { withTemporarilyAttachedBrowserView } = require('../src/browser-view-lifecycle');
+const { getAttachedBrowserViews, withTemporarilyAttachedBrowserView } = require('../src/browser-view-lifecycle');
 
 app.whenReady().then(async () => {
   const directory = fs.mkdtempSync(path.join(app.getPath('temp'), 'central-backup-smoke-'));
   if (process.env.KEEP_BACKUP_SMOKE === '1') console.log(`artefatos do teste: ${directory}`);
   const window = new BrowserWindow({ show: true, width: 1000, height: 800, webPreferences: { sandbox: true } });
-  const view = new BrowserView({ webPreferences: { sandbox: true } });
+  const view = new WebContentsView({ webPreferences: { sandbox: true } });
   try {
     const messages = Array.from({ length: 34 }, (_, index) => `
       <div data-id="message-${index + 1}" class="message ${index % 2 ? 'received' : 'sent'}"
@@ -40,7 +40,7 @@ app.whenReady().then(async () => {
       console.error('progresso antes da falha:', progress);
       throw error;
     }
-    assert.equal(window.getBrowserViews().includes(view), false, 'a conversa deve voltar a ficar atrás do modal');
+    assert.equal(getAttachedBrowserViews(window).includes(view), false, 'a conversa deve voltar a ficar atrás do modal');
     assert.ok(count >= 2);
     const firstPrint = path.join(printsDirectory, '001.png');
     const firstImage = nativeImage.createFromBuffer(fs.readFileSync(firstPrint));

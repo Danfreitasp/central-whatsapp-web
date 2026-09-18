@@ -21,14 +21,15 @@ function isLikelyBlankBitmap(bitmap, options = {}) {
     minLuma = Math.min(minLuma, luma);
     maxLuma = Math.max(maxLuma, luma);
     lumaTotal += luma;
-    if (Math.max(red, green, blue) - Math.min(red, green, blue) > 12) colorful += 1;
+    if (Math.max(red, green, blue) - Math.min(red, green, blue) > 32) colorful += 1;
     sampled += 1;
   }
 
+  if (sampled === 0) return true;
   if (sampled < 4) return false;
   const average = lumaTotal / sampled;
   const nearlyUniform = maxLuma - minLuma < 9 && colorful / sampled < 0.08;
-  return nearlyUniform && (average < 48 || (average > 65 && average < 205));
+  return nearlyUniform && average < 245;
 }
 
 function isLikelyBlankImage(image) {

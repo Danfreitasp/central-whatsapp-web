@@ -1,4 +1,5 @@
-const { app, BrowserWindow, BrowserView, clipboard, dialog, ipcMain, Menu, Notification, session, shell, Tray, nativeImage } = require('electron');
+const { app, BrowserWindow, WebContentsView, clipboard, dialog, ipcMain, Menu, Notification, powerMonitor, session, shell, Tray, nativeImage } = require('electron');
+const os = require('node:os');
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
@@ -27,11 +28,17 @@ const { preloadProfiles } = require('./profile-preload');
 const { applySemNomeVariantsMigration } = require('./template-migrations');
 const { normalizeMessageVariants, createSuccessfulVariantRotation } = require('./message-variant-rotation');
 const { createApplicationMenuTemplate } = require('./application-menu');
-const { isLikelyBlankImage } = require('./browser-surface-health');
+const { createBrowserSurfaceMonitor } = require('./browser-surface-monitor');
+const { createSurfaceDiagnostics } = require('./surface-diagnostics');
 const { syncWindowsStartup, createTrayMenuTemplate } = require('./windows-integration');
 const {
+  getAttachedBrowserViews,
+  attachBrowserView,
+  detachBrowserView,
   isBrowserViewAttached,
   keepBrowserViewReady,
+  rebindBrowserViewSurface,
+  repaintBrowserViewSurface,
   withTemporarilyAttachedBrowserView,
   isolateActiveBrowserView
 } = require('./browser-view-lifecycle');
@@ -50,6 +57,8 @@ const { createWhatsAppUserAgent } = require('./whatsapp-user-agent');
 const { createDistributionQueue } = require('./distribution-queue');
 const { isWhatsAppSendConfirmed } = require('./dispatch-delivery-confirmation');
 const { captureWhatsAppConversation } = require('./whatsapp-conversation-capture');
+const { normalizeGlobalSearchQuery, normalizeGlobalSearchMode, sortGlobalSearchResults } = require('./global-search');
+const { GlobalSearchIndex } = require('./global-search-index');
 const {
   audioBackupFilename,
   sanitizeBackupName
@@ -77,6 +86,9 @@ const WPP_CONNECT_PATH = path.join(__dirname, 'vendor', 'wppconnect-wa.js');
 // Sem isso, o Electron aberto por "npm start" cria uma pasta isolada chamada
 // "Electron" e parece não ter nenhum número conectado.
 app.setPath('userData', path.join(app.getPath('appData'), 'central-whatsapp-web'));
+const graphicsCompatibilityMode = loadSettings().graphicsCompatibilityMode === true;
+if (graphicsCompatibilityMode) app.disableHardwareAcceleration();
+const surfaceDiagnostics = createSurfaceDiagnostics(path.join(app.getPath('userData'), 'diagnostics'));
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 if (!hasSingleInstanceLock) app.quit();
 
@@ -96,6 +108,7 @@ let settings = {};
 let scheduledDispatches = [];
 let dispatchHistory = [];
 let campaignStore = null;
+let globalSearchIndex = null;
 let scheduledDispatchTimer = null;
 const views = new Map();
 let activeProfileId = null;
@@ -118,7 +131,7 @@ let notificationBadgeIcon = null;
 let notificationCountsIcon = null;
 let isQuitting = false;
 let surfaceHealthTimer = null;
-const blankSurfaceStrikes = new Map();
+let globalSearchRevision = 0;
 const startHidden = process.argv.includes('--hidden');
 
 function hasActiveDispatches() {
@@ -184,6 +197,10 @@ function scheduledDispatchesPath() {
 
 function dispatchHistoryPath() {
   return path.join(app.getPath('userData'), 'dispatch-history.json');
+}
+
+function globalSearchIndexPath() {
+  return path.join(app.getPath('userData'), 'global-search.db');
 }
 
 function loadDispatchHistory() {
@@ -286,6 +303,20 @@ function rebuildApplicationMenu() {
     startupEnabled: settings.startWithWindows !== false,
     startupAvailable: startupAvailable(),
     onToggleStartup: setStartWithWindows,
+    graphicsCompatibilityMode: settings.graphicsCompatibilityMode === true,
+    onToggleGraphicsCompatibility: (enabled) => {
+      settings.graphicsCompatibilityMode = enabled;
+      saveSettings();
+      rebuildApplicationMenu();
+    },
+    onRecoverSurface: () => {
+      recordSurfaceEvent('manual-recovery');
+      recoverActiveBrowserSurface(views.get(activeProfileId));
+    },
+    onOpenDiagnostics: () => {
+      recordSurfaceEvent('diagnostics-opened');
+      shell.openPath(surfaceDiagnostics.directory);
+    },
     onCheckForUpdates: () => appUpdaterController?.checkForUpdates({ manual: true })
   })));
 }
@@ -601,7 +632,7 @@ function activateProfile(profileId) {
 
 function syncProfileFromActivatedBrowserView() {
   if (!window || window.isDestroyed()) return false;
-  const topView = window.getBrowserViews().at(-1);
+  const topView = getAttachedBrowserViews(window).at(-1);
   const viewStates = [...views.entries()].map(([id, view]) => ({
     id,
     focused: !view.webContents.isDestroyed() && view.webContents.isFocused(),
@@ -705,7 +736,7 @@ function hideActiveView() {
   browserViewsSuspended = true;
   profileSwitchRevision += 1;
   for (const view of views.values()) {
-    if (isBrowserViewAttached(window, view)) window.removeBrowserView(view);
+    if (isBrowserViewAttached(window, view)) detachBrowserView(window, view);
   }
   syncSessionResourcePolicy();
 }
@@ -722,48 +753,52 @@ function showActiveView() {
 function recoverActiveBrowserSurface(view) {
   if (!window || window.isDestroyed() || !view || view.webContents.isDestroyed()) return;
   const bounds = activeViewBounds();
+  const canRebind = canInspectActiveSurface(view);
+
+  if (canRebind) {
+    rebindBrowserViewSurface(window, view, bounds, { focus: window.isFocused?.() !== false });
+    repaintBrowserViewSurface(view, () => (
+      canInspectActiveSurface(view) && isBrowserViewAttached(window, view) ? activeViewBounds() : null
+    ));
+    return;
+  }
+
+  // Durante um disparo não anexamos novamente a superfície do remetente.
+  // Ainda é seguro solicitar um novo quadro sem navegar ou perder a sessão.
   view.webContents.setBackgroundThrottling(false);
   view.webContents.invalidate?.();
-  view.setBounds({ ...bounds, width: Math.max(1, bounds.width - 1) });
-  setTimeout(() => {
-    if (!window || window.isDestroyed() || browserViewsSuspended || views.get(activeProfileId) !== view) return;
-    view.setBounds(activeViewBounds());
-    view.webContents.invalidate?.();
-  }, 80);
 }
 
-async function checkActiveBrowserSurface() {
-  if (!window || window.isDestroyed() || !window.isVisible() || window.isMinimized() || browserViewsSuspended) return;
-  const profileId = activeProfileId;
-  const view = views.get(profileId);
-  if (!profileId || !view || view.webContents.isDestroyed() || view.webContents.isLoadingMainFrame()) return;
-
-  try {
-    const image = await Promise.race([
-      view.webContents.capturePage(),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('tempo esgotado ao verificar superfície')), 4000))
-    ]);
-    if (profileId !== activeProfileId || views.get(profileId) !== view) return;
-    if (!isLikelyBlankImage(image)) {
-      blankSurfaceStrikes.delete(profileId);
-      return;
-    }
-
-    const strikes = (blankSurfaceStrikes.get(profileId) || 0) + 1;
-    blankSurfaceStrikes.set(profileId, strikes);
-    console.warn(`[Central WhatsApp] Superfície vazia detectada em ${profileId}; tentativa ${strikes} de recuperação.`);
-    recoverActiveBrowserSurface(view);
-
-    // Se o compositor não voltou em duas verificações e não há envio em curso,
-    // faz automaticamente o mesmo refresh que antes precisava ser manual.
-    if (strikes >= 2 && !runningDispatchState(profileId)) {
-      blankSurfaceStrikes.delete(profileId);
-      view.webContents.reload();
-    }
-  } catch (error) {
-    console.warn('[Central WhatsApp] Não foi possível verificar a superfície ativa:', error.message || String(error));
-  }
+function recordSurfaceEvent(event, view, details = {}) {
+  surfaceDiagnostics.record(event, {
+    contentsId: view?.webContents?.id,
+    profileCount: profiles.length,
+    viewCount: views.size,
+    attachedCount: window && !window.isDestroyed() ? getAttachedBrowserViews(window).length : 0,
+    freeMemoryMB: Math.round(os.freemem() / 1048576),
+    totalMemoryMB: Math.round(os.totalmem() / 1048576),
+    dispatchActive: hasActiveDispatches(),
+    ...details
+  });
 }
+
+function canInspectActiveSurface(view) {
+  return Boolean(!isQuitting && window && !window.isDestroyed() && window.isVisible()
+    && !window.isMinimized() && !browserViewsSuspended && view
+    && views.get(activeProfileId) === view && !view.webContents.isDestroyed()
+    && !view.webContents.isLoadingMainFrame() && !runningDispatchState(activeProfileId));
+}
+
+const checkActiveBrowserSurface = createBrowserSurfaceMonitor({
+  getTarget: () => {
+    const view = views.get(activeProfileId);
+    if (!canInspectActiveSurface(view)) return null;
+    return { view, revision: profileSwitchRevision, attached: isBrowserViewAttached(window, view) };
+  },
+  isCurrent: (target) => target.revision === profileSwitchRevision && canInspectActiveSurface(target.view),
+  recover: (target) => recoverActiveBrowserSurface(target.view),
+  report: (event, target) => recordSurfaceEvent(event, target.view)
+});
 
 function startSurfaceHealthMonitor() {
   clearInterval(surfaceHealthTimer);
@@ -951,8 +986,8 @@ function setDispatchSending(state, sending) {
 
   if (next && state.releaseBetweenSends && view && window && !window.isDestroyed()) {
     state.restoreSenderView = activeProfileId === state.profileId
-      && window.getBrowserViews().includes(view);
-    if (state.restoreSenderView) window.removeBrowserView(view);
+      && getAttachedBrowserViews(window).includes(view);
+    if (state.restoreSenderView) detachBrowserView(window, view);
   }
 
   state.sending = next;
@@ -960,7 +995,7 @@ function setDispatchSending(state, sending) {
   if (!next && state.releaseBetweenSends && state.restoreSenderView) {
     state.restoreSenderView = false;
     if (view && !view.webContents.isDestroyed() && activeProfileId === state.profileId) {
-      if (!window.getBrowserViews().includes(view)) window.addBrowserView(view);
+      if (!getAttachedBrowserViews(window).includes(view)) attachBrowserView(window, view);
       resizeActiveView();
     }
   }
@@ -1072,6 +1107,369 @@ async function ensureWhatsAppBridge(view, timeoutMs = 45000) {
     await sleep(700);
   }
   throw new Error('WhatsApp não ficou pronto. Confirme se o perfil está conectado e tente novamente.');
+}
+
+function publishGlobalSearchProgress(payload) {
+  if (!window || window.isDestroyed()) return;
+  window.webContents.send('global-search:progress', payload);
+}
+
+const QUICK_SEARCH_MESSAGE_LIMIT = 120;
+const GLOBAL_SEARCH_PROFILE_WORKERS = 2;
+const GLOBAL_SEARCH_CHAT_WORKERS = 3;
+
+async function runProfileWorkers(task) {
+  let cursor = 0;
+  const workers = Array.from(
+    { length: Math.min(GLOBAL_SEARCH_PROFILE_WORKERS, Math.max(1, profiles.length)) },
+    async () => {
+      while (cursor < profiles.length) {
+        const index = cursor;
+        cursor += 1;
+        await task(profiles[index], index);
+      }
+    }
+  );
+  await Promise.all(workers);
+}
+
+function currentGlobalSearchStatus() {
+  return globalSearchIndex?.profileStatus(profiles.map((profile) => profile.id)) || {
+    ftsAvailable: false,
+    indexedProfiles: 0,
+    profileCount: profiles.length,
+    chatCount: 0,
+    messageCount: 0,
+    lastIndexedAt: ''
+  };
+}
+
+async function searchProfileConversations(profile, query, messageLimit = QUICK_SEARCH_MESSAGE_LIMIT) {
+  const view = createView(profile);
+  await ensureWhatsAppBridge(view, 25000);
+  return view.webContents.executeJavaScript(`(async () => {
+    const query = ${JSON.stringify(query)};
+    const messageLimit = ${Number(messageLimit)};
+    const normalizeText = (value) => String(value || '')
+      .normalize('NFD').replace(/[\\u0300-\\u036f]/g, '').toLocaleLowerCase('pt-BR')
+      .replace(/\\s+/g, ' ').trim();
+    const digitsOf = (value) => String(value || '').replace(/\\D/g, '');
+    const serializeId = (value) => {
+      try { return value?._serialized || value?.toString?.() || String(value || ''); } catch { return ''; }
+    };
+    const stringValue = (value) => typeof value === 'string' ? value : '';
+    const messageText = (message) => [
+      message?.body, message?.caption, message?.text, message?.content,
+      message?.description, message?.title, message?.quotedMsg?.body
+    ].map(stringValue).filter(Boolean).join(' ');
+    const matches = (value) => {
+      const text = normalizeText(value);
+      if (query.text && text.includes(query.text)) return true;
+      return Boolean(query.digits && digitsOf(value).includes(query.digits));
+    };
+    const chats = await globalThis.WPP.chat.list({ ignoreGroupMetadata: true });
+    const found = [];
+    let messageSearchFailures = 0;
+    let messageSearchAttempts = 0;
+    let cursor = 0;
+    const inspectChat = async (chat) => {
+      const chatId = serializeId(chat?.id);
+      if (!chatId) return;
+      const title = String(chat?.formattedTitle || chat?.name || chat?.contact?.formattedName || chat?.contact?.name || chat?.contact?.pushname || chatId);
+      const metadata = [
+        title, chatId, serializeId(chat?.contact?.id), chat?.contact?.phoneNumber,
+        chat?.contact?.formattedPhone, chat?.contact?.verifiedName, chat?.contact?.shortName
+      ].filter(Boolean).map(String);
+      const phone = metadata.map(digitsOf).find((value) => value.length >= 8 && value.length <= 15) || '';
+      const metadataMatch = metadata.some(matches);
+      let matchingMessage = null;
+      if (!metadataMatch) {
+        messageSearchAttempts += 1;
+        try {
+          const messages = await globalThis.WPP.chat.getMessages(chatId, { count: messageLimit });
+          for (let index = messages.length - 1; index >= 0; index -= 1) {
+            const text = messageText(messages[index]);
+            if (!text || !matches(text)) continue;
+            matchingMessage = messages[index];
+            break;
+          }
+        } catch {
+          messageSearchFailures += 1;
+        }
+      }
+      if (!metadataMatch && !matchingMessage) return;
+      const rawTimestamp = Number(matchingMessage?.t || matchingMessage?.timestamp || chat?.t || chat?.timestamp || 0);
+      const timestamp = rawTimestamp > 100000000000 ? Math.round(rawTimestamp / 1000) : rawTimestamp;
+      const body = messageText(matchingMessage).replace(/\\s+/g, ' ').trim();
+      found.push({
+        chatId,
+        chatName: title,
+        messageId: serializeId(matchingMessage?.id),
+        phone,
+        snippet: body ? body.slice(0, 220) : (phone ? ('Telefone: +' + phone) : 'Nome da conversa encontrado'),
+        timestamp,
+        matchType: matchingMessage ? 'message' : 'contact'
+      });
+    };
+    const workers = Array.from({ length: Math.min(3, Math.max(1, chats.length)) }, async () => {
+      while (cursor < chats.length) {
+        const index = cursor;
+        cursor += 1;
+        await inspectChat(chats[index]);
+      }
+    });
+    await Promise.all(workers);
+    return { results: found, scannedChats: chats.length, messageSearchAttempts, messageSearchFailures };
+  })()`, true);
+}
+
+async function quickSearchAllConversations(query, revision) {
+  const results = [];
+  const failures = [];
+  const phoneOnlyProfiles = [];
+  let searchedProfiles = 0;
+
+  await runProfileWorkers(async (profile, index) => {
+    if (revision !== globalSearchRevision) return;
+    publishGlobalSearchProgress({
+      profileId: profile.id,
+      message: `Busca rápida em ${profile.name} (${index + 1} de ${profiles.length})…`
+    });
+    try {
+      const payload = await searchProfileConversations(profile, query);
+      if (revision !== globalSearchRevision) return;
+      searchedProfiles += 1;
+      if (payload.messageSearchAttempts > 0 && payload.messageSearchFailures >= payload.messageSearchAttempts) {
+        phoneOnlyProfiles.push({ profileId: profile.id, profileName: profile.name });
+      }
+      for (const result of payload.results || []) {
+        results.push({
+          ...result,
+          profileId: profile.id,
+          profileName: profile.name,
+          profileColor: profile.color
+        });
+      }
+    } catch (error) {
+      failures.push({ profileId: profile.id, profileName: profile.name, error: error.message });
+    }
+  });
+
+  if (revision !== globalSearchRevision) {
+    return { cancelled: true, results: [], failures: [], phoneOnlyProfiles: [], searchedProfiles };
+  }
+
+  return {
+    cancelled: false,
+    mode: 'quick',
+    results: sortGlobalSearchResults(results),
+    failures,
+    phoneOnlyProfiles,
+    searchedProfiles,
+    indexStatus: currentGlobalSearchStatus()
+  };
+}
+
+async function listProfileSearchChats(profile) {
+  const view = createView(profile);
+  await ensureWhatsAppBridge(view, 25000);
+  const chats = await view.webContents.executeJavaScript(`(async () => {
+    const serializeId = (value) => {
+      try { return value?._serialized || value?.toString?.() || String(value || ''); } catch { return ''; }
+    };
+    const digitsOf = (value) => String(value || '').replace(/\\D/g, '');
+    const chats = await globalThis.WPP.chat.list({ ignoreGroupMetadata: true });
+    return chats.map((chat) => {
+      const chatId = serializeId(chat?.id);
+      const title = String(chat?.formattedTitle || chat?.name || chat?.contact?.formattedName || chat?.contact?.name || chat?.contact?.pushname || chatId);
+      const metadata = [
+        chatId, serializeId(chat?.contact?.id), chat?.contact?.phoneNumber,
+        chat?.contact?.formattedPhone, chat?.contact?.verifiedName, chat?.contact?.shortName
+      ].filter(Boolean).map(String);
+      const phone = metadata.map(digitsOf).find((value) => value.length >= 8 && value.length <= 15) || '';
+      let lastMessage = null;
+      try { lastMessage = chat?.msgs?.last?.() || chat?.msgs?._models?.at?.(-1) || null; } catch {}
+      const sourceTimestamp = Math.max(
+        Number(lastMessage?.t || lastMessage?.timestamp || 0),
+        Number(chat?.t || chat?.timestamp || 0)
+      );
+      return {
+        chatId,
+        chatName: title,
+        phone,
+        sourceTimestamp: sourceTimestamp > 100000000000 ? Math.round(sourceTimestamp / 1000) : sourceTimestamp,
+        sourceMessageId: serializeId(lastMessage?.id || chat?.lastReceivedKey)
+      };
+    }).filter((chat) => chat.chatId);
+  })()`, true);
+  return { view, chats: Array.isArray(chats) ? chats : [] };
+}
+
+async function readChatMessagesForIndex(view, chatId, afterMessageId = '') {
+  return view.webContents.executeJavaScript(`(async () => {
+    const chatId = ${JSON.stringify(chatId)};
+    const afterMessageId = ${JSON.stringify(afterMessageId)};
+    const serializeId = (value) => {
+      try { return value?._serialized || value?.toString?.() || String(value || ''); } catch { return ''; }
+    };
+    const stringValue = (value) => typeof value === 'string' ? value : '';
+    const messageText = (message) => [
+      message?.body, message?.caption, message?.text, message?.content,
+      message?.description, message?.title, message?.quotedMsg?.body
+    ].map(stringValue).filter(Boolean).join(' ').replace(/\\s+/g, ' ').trim().slice(0, 20000);
+    const options = afterMessageId
+      ? { count: -1, direction: 'after', id: afterMessageId }
+      : { count: -1 };
+    const messages = await globalThis.WPP.chat.getMessages(chatId, options);
+    return messages.map((message, position) => {
+      const rawTimestamp = Number(message?.t || message?.timestamp || 0);
+      return {
+        messageId: serializeId(message?.id) || (chatId + ':' + rawTimestamp + ':' + position),
+        body: messageText(message),
+        timestamp: rawTimestamp > 100000000000 ? Math.round(rawTimestamp / 1000) : rawTimestamp
+      };
+    }).filter((message) => message.body);
+  })()`, true);
+}
+
+async function synchronizeProfileSearchIndex(profile, revision) {
+  const { view, chats } = await listProfileSearchChats(profile);
+  for (const chat of chats) globalSearchIndex.upsertChatMetadata(profile.id, chat, false);
+  globalSearchIndex.pruneProfileChats(profile.id, chats.map((chat) => chat.chatId));
+  const pending = chats
+    .map((chat) => ({ chat, previous: globalSearchIndex.indexedChat(profile.id, chat.chatId) }))
+    .filter(({ chat }) => globalSearchIndex.needsRefresh(profile.id, chat));
+  let cursor = 0;
+  let completed = 0;
+  let messageCount = 0;
+  const chatFailures = [];
+  const workers = Array.from({ length: Math.min(GLOBAL_SEARCH_CHAT_WORKERS, Math.max(1, pending.length)) }, async () => {
+    while (cursor < pending.length && revision === globalSearchRevision) {
+      const index = cursor;
+      cursor += 1;
+      const { chat, previous } = pending[index];
+      try {
+        if (previous?.complete && previous.sourceMessageId) {
+          try {
+            const messages = await readChatMessagesForIndex(view, chat.chatId, previous.sourceMessageId);
+            messageCount += globalSearchIndex.appendChatMessages(profile.id, chat, messages);
+          } catch {
+            const messages = await readChatMessagesForIndex(view, chat.chatId);
+            messageCount += globalSearchIndex.replaceChatMessages(profile.id, chat, messages);
+          }
+        } else {
+          const messages = await readChatMessagesForIndex(view, chat.chatId);
+          messageCount += globalSearchIndex.replaceChatMessages(profile.id, chat, messages);
+        }
+      } catch (error) {
+        chatFailures.push({ chatId: chat.chatId, chatName: chat.chatName, error: error.message || String(error) });
+      }
+      completed += 1;
+      if (completed === 1 || completed === pending.length || completed % 5 === 0) {
+        publishGlobalSearchProgress({
+          profileId: profile.id,
+          message: `Indexando ${profile.name}: ${completed} de ${pending.length} conversa(s)…`
+        });
+      }
+    }
+  });
+  await Promise.all(workers);
+  const complete = revision === globalSearchRevision && chatFailures.length === 0;
+  globalSearchIndex.finishProfile(profile.id, { chatCount: chats.length, complete });
+  return { chats: chats.length, refreshedChats: completed, messageCount, chatFailures, complete };
+}
+
+async function synchronizeGlobalSearchIndex(revision, { forceRebuild = false } = {}) {
+  if (forceRebuild) globalSearchIndex.clear();
+  const failures = [];
+  let searchedProfiles = 0;
+  await runProfileWorkers(async (profile, index) => {
+    if (revision !== globalSearchRevision) return;
+    publishGlobalSearchProgress({
+      profileId: profile.id,
+      message: `${forceRebuild ? 'Reconstruindo' : 'Atualizando'} o índice de ${profile.name} (${index + 1} de ${profiles.length})…`
+    });
+    try {
+      const result = await synchronizeProfileSearchIndex(profile, revision);
+      if (revision !== globalSearchRevision) return;
+      searchedProfiles += 1;
+      if (result.chatFailures.length) {
+        failures.push({
+          profileId: profile.id,
+          profileName: profile.name,
+          error: `${result.chatFailures.length} conversa(s) não puderam ser indexadas.`
+        });
+      }
+    } catch (error) {
+      failures.push({ profileId: profile.id, profileName: profile.name, error: error.message || String(error) });
+    }
+  });
+  return { cancelled: revision !== globalSearchRevision, failures, searchedProfiles };
+}
+
+async function completeSearchAllConversations(query, revision, { forceRebuild = false } = {}) {
+  const sync = await synchronizeGlobalSearchIndex(revision, { forceRebuild });
+  if (sync.cancelled) return { cancelled: true, results: [], failures: sync.failures, searchedProfiles: sync.searchedProfiles };
+  const profileById = new Map(profiles.map((profile) => [profile.id, profile]));
+  const results = globalSearchIndex.search(query, profiles.map((profile) => profile.id)).map((result) => {
+    const profile = profileById.get(result.profileId);
+    return {
+      ...result,
+      profileName: profile?.name || 'Número',
+      profileColor: profile?.color || '#00a884'
+    };
+  });
+  return {
+    cancelled: false,
+    mode: 'complete',
+    results: sortGlobalSearchResults(results),
+    failures: sync.failures,
+    phoneOnlyProfiles: [],
+    searchedProfiles: sync.searchedProfiles,
+    indexStatus: currentGlobalSearchStatus()
+  };
+}
+
+async function searchAllConversations(input) {
+  const rawQuery = input && typeof input === 'object' ? input.query : input;
+  const mode = normalizeGlobalSearchMode(input && typeof input === 'object' ? input.mode : 'quick');
+  const query = normalizeGlobalSearchQuery(rawQuery);
+  const revision = ++globalSearchRevision;
+  if (mode === 'complete') return completeSearchAllConversations(query, revision);
+  return quickSearchAllConversations(query, revision);
+}
+
+async function rebuildGlobalSearchIndex() {
+  const revision = ++globalSearchRevision;
+  const result = await synchronizeGlobalSearchIndex(revision, { forceRebuild: true });
+  return { ...result, indexStatus: currentGlobalSearchStatus() };
+}
+
+async function openGlobalSearchResult(input) {
+  const profileId = String(input?.profileId || '');
+  const chatId = String(input?.chatId || '').slice(0, 180);
+  const messageId = String(input?.messageId || '').slice(0, 260);
+  const profile = profiles.find((item) => item.id === profileId);
+  if (!profile || !chatId) return { ok: false, error: 'A conversa pesquisada não está mais disponível.' };
+  if (!activateProfile(profileId)) return { ok: false, error: 'Não foi possível ativar este número.' };
+  const view = createView(profile);
+  try {
+    await ensureWhatsAppBridge(view, 25000);
+    const opened = await view.webContents.executeJavaScript(`(async () => {
+      const chatId = ${JSON.stringify(chatId)};
+      const messageId = ${JSON.stringify(messageId)};
+      if (messageId) {
+        try {
+          if (await globalThis.WPP.chat.openChatAt(chatId, messageId, 'Chatlist')) return true;
+        } catch {}
+      }
+      try { return Boolean(await globalThis.WPP.chat.openChatBottom(chatId, 'Chatlist')); } catch { return false; }
+    })()`, true);
+    view.webContents.focus();
+    return opened ? { ok: true } : { ok: false, error: 'O WhatsApp não conseguiu abrir esta conversa.' };
+  } catch (error) {
+    return { ok: false, error: error.message || 'Não foi possível abrir a conversa.' };
+  }
 }
 
 function publishConversationBackupProgress(payload) {
@@ -1204,7 +1602,10 @@ async function createConversationBackup(profileId) {
         publishConversationBackupProgress,
         { isCancelled: () => conversationBackupCancellations.has(profile.id) }
       ),
-      { settleMs: 700 }
+      {
+        settleMs: 700,
+        shouldRemainAttached: () => !browserViewsSuspended && activeProfileId === profile.id
+      }
     );
 
     const audioMessages = extracted.messages.filter((message) => message.isAudio && message.id);
@@ -1441,7 +1842,7 @@ function finishDispatchState(state) {
   persistDispatchHistory(state);
   const view = views.get(state.profileId);
   if (state.restoreSenderView && view && !view.webContents.isDestroyed() && activeProfileId === state.profileId) {
-    if (!window.getBrowserViews().includes(view)) window.addBrowserView(view);
+    if (!getAttachedBrowserViews(window).includes(view)) attachBrowserView(window, view);
     resizeActiveView();
   }
   state.running = false;
@@ -1715,7 +2116,7 @@ function createView(profile) {
     callback(WHATSAPP_ALLOWED_PERMISSIONS.has(permission));
   });
 
-  const view = new BrowserView({
+  const view = new WebContentsView({
     webPreferences: {
       partition,
       contextIsolation: true,
@@ -1742,17 +2143,19 @@ function createView(profile) {
     syncLabelsToView(profile.id);
   });
   view.webContents.on('unresponsive', () => {
+    recordSurfaceEvent('renderer-unresponsive', view);
     console.warn(`[Central WhatsApp] Sessão ${profile.id} deixou de responder; tentando recuperar a superfície.`);
     if (profile.id === activeProfileId) recoverActiveBrowserSurface(view);
   });
   view.webContents.on('render-process-gone', (_event, details) => {
+    recordSurfaceEvent('renderer-gone', view, { reason: details?.reason, exitCode: details?.exitCode });
     console.error(`[Central WhatsApp] Renderer da sessão ${profile.id} encerrou (${details?.reason || 'motivo desconhecido'}).`);
-    blankSurfaceStrikes.delete(profile.id);
     if (details?.reason === 'clean-exit') return;
     setTimeout(() => {
       if (isQuitting || views.get(profile.id) !== view) return;
-      if (isBrowserViewAttached(window, view)) window.removeBrowserView(view);
+      if (isBrowserViewAttached(window, view)) detachBrowserView(window, view);
       views.delete(profile.id);
+      if (!view.webContents.isDestroyed()) view.webContents.close();
       const profileStillExists = profiles.some((item) => item.id === profile.id);
       if (!profileStillExists || (profile.id !== activeProfileId && !runningDispatchState(profile.id))) return;
       createView(profile);
@@ -1801,6 +2204,23 @@ function createWindow() {
   window.loadFile(path.join(__dirname, 'renderer', 'index.html'));
   window.on('resize', resizeActiveView);
   window.on('show', syncUnreadIndicators);
+  const restoreSurface = () => {
+    profileSwitchRevision += 1;
+    const view = views.get(activeProfileId);
+    if (canInspectActiveSurface(view)) recoverActiveBrowserSurface(view);
+  };
+  window.on('restore', restoreSurface);
+  window.on('show', restoreSurface);
+  window.on('hide', () => { profileSwitchRevision += 1; });
+  window.on('minimize', () => { profileSwitchRevision += 1; });
+  window.on('closed', () => {
+    // WebContentsView exige encerramento explícito inclusive das views
+    // desanexadas; o mapa é a fonte de todas as sessões vivas.
+    for (const view of views.values()) {
+      if (!view.webContents.isDestroyed()) view.webContents.close();
+    }
+    views.clear();
+  });
   window.on('close', (event) => {
     if (isQuitting) return;
     event.preventDefault();
@@ -1809,6 +2229,19 @@ function createWindow() {
 }
 
 ipcMain.handle('profiles:list', () => profiles.map(profileForPublic));
+ipcMain.handle('global-search:run', (_event, query) => searchAllConversations(query));
+ipcMain.handle('global-search:cancel', () => {
+  globalSearchRevision += 1;
+  return true;
+});
+ipcMain.handle('global-search:open', (_event, input) => openGlobalSearchResult(input));
+ipcMain.handle('global-search:index-status', () => currentGlobalSearchStatus());
+ipcMain.handle('global-search:rebuild-index', () => rebuildGlobalSearchIndex());
+ipcMain.handle('global-search:clear-index', () => {
+  globalSearchRevision += 1;
+  globalSearchIndex.clear();
+  return currentGlobalSearchStatus();
+});
 ipcMain.handle('conversation-backup:create', (_event, profileId) => createConversationBackup(profileId));
 ipcMain.handle('conversation-backup:cancel', (_event, profileId) => {
   conversationBackupCancellations.add(String(profileId || ''));
@@ -1979,9 +2412,9 @@ function startDispatchInternal(input, requestedProfileId) {
   dispatchStates.set(profile.id, state);
 
   const view = createView(profile);
-  if (!state.releaseBetweenSends && activeProfileId === profile.id && window.getBrowserViews().includes(view)) {
+  if (!state.releaseBetweenSends && activeProfileId === profile.id && getAttachedBrowserViews(window).includes(view)) {
     state.restoreSenderView = true;
-    window.removeBrowserView(view);
+    detachBrowserView(window, view);
   }
 
   runDispatch({
@@ -2132,9 +2565,9 @@ function startDistributionInternal(input) {
     dispatchStates.set(profile.id, state);
 
     const view = createView(profile);
-    if (!state.releaseBetweenSends && activeProfileId === profile.id && window.getBrowserViews().includes(view)) {
+    if (!state.releaseBetweenSends && activeProfileId === profile.id && getAttachedBrowserViews(window).includes(view)) {
       state.restoreSenderView = true;
-      window.removeBrowserView(view);
+      detachBrowserView(window, view);
     }
     publishDispatchState(state);
     runDistributedWorker(distribution, profile, workerInput, state).catch((error) => {
@@ -2433,11 +2866,12 @@ ipcMain.handle('profiles:remove', (_event, id) => {
   const [profile] = profiles.splice(index, 1);
   const view = views.get(profile.id);
   if (view) {
-    window.removeBrowserView(view);
+    detachBrowserView(window, view);
     view.webContents.close();
     views.delete(profile.id);
   }
   unreadByProfile.delete(profile.id);
+  globalSearchIndex?.clear(profile.id);
   notificationReadyProfiles.delete(profile.id);
   notificationRevisions.delete(profile.id);
   syncUnreadIndicators();
@@ -2453,12 +2887,28 @@ ipcMain.handle('profiles:remove', (_event, id) => {
 });
 
 if (hasSingleInstanceLock) app.whenReady().then(() => {
+  recordSurfaceEvent('startup', null, {
+    version: app.getVersion(), electron: process.versions.electron,
+    chrome: process.versions.chrome, accelerated: app.isHardwareAccelerationEnabled()
+  });
+  powerMonitor.on('resume', () => {
+    profileSwitchRevision += 1;
+    recordSurfaceEvent('system-resume');
+    const view = views.get(activeProfileId);
+    if (canInspectActiveSurface(view)) recoverActiveBrowserSurface(view);
+  });
   profiles = loadProfiles();
   templates = loadTemplates();
   labelsData = loadLabels();
   settings = loadSettings();
   dispatchHistory = loadDispatchHistory();
   campaignStore = new CampaignStore(path.join(app.getPath('userData'), 'campaigns.db'));
+  try {
+    globalSearchIndex = new GlobalSearchIndex(globalSearchIndexPath());
+  } catch (error) {
+    console.warn('[Central WhatsApp] O índice persistente de pesquisa não pôde ser aberto; usando índice temporário:', error.message);
+    globalSearchIndex = new GlobalSearchIndex(':memory:');
+  }
   campaignStore.seedSentRegistry(dispatchHistory);
   if (typeof settings.startWithWindows !== 'boolean') settings.startWithWindows = true;
   saveSettings();
@@ -2509,6 +2959,15 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
 
 app.on('second-instance', () => showMainWindow());
 
+app.on('child-process-gone', (_event, details) => {
+  if (details.type !== 'GPU' || isQuitting) return;
+  recordSurfaceEvent('gpu-process-gone', null, { reason: details.reason, exitCode: details.exitCode });
+  setTimeout(() => {
+    const view = views.get(activeProfileId);
+    if (canInspectActiveSurface(view)) recoverActiveBrowserSurface(view);
+  }, 500);
+});
+
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
@@ -2520,4 +2979,6 @@ app.on('before-quit', () => {
   appUpdaterController?.stop();
   campaignStore?.close();
   campaignStore = null;
+  globalSearchIndex?.close();
+  globalSearchIndex = null;
 });

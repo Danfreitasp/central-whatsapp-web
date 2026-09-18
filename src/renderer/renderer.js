@@ -293,7 +293,6 @@ document.querySelector('#cancel').onclick = async () => {
   await window.centralWhatsApp.cancelAdd();
 };
 dialog.addEventListener('cancel', () => window.centralWhatsApp.cancelAdd());
-document.querySelector('#labels-button').onclick = openLabels;
 document.querySelector('#labels-close').onclick = closeLabels;
 labelsDialog.addEventListener('cancel', () => window.centralWhatsApp.cancelAdd());
 labelForm.onsubmit = async (event) => {

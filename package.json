@@ -1,6 +1,6 @@
 {
   "name": "central-whatsapp-web",
-  "version": "0.10.20",
+  "version": "0.10.25",
   "description": "Central local de múltiplas sessões do WhatsApp Web com disparos por planilha ou lista",
   "main": "src/main.js",
   "scripts": {
@@ -11,7 +11,7 @@
     "test:ui-search": "electron tests/ui-search-smoke.js"
   },
   "devDependencies": {
-    "electron": "^43.2.0",
+    "electron": "43.7.2",
     "electron-builder": "^26.0.12"
   },
   "build": {

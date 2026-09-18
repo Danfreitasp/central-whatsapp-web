@@ -15,11 +15,13 @@
     <link rel="stylesheet" href="history.css" />
     <link rel="stylesheet" href="campaigns.css" />
     <link rel="stylesheet" href="backup.css" />
+    <link rel="stylesheet" href="search.css" />
   </head>
   <body>
-    <header><span class="logo">◉</span><strong>Central WhatsApp Web</strong><span class="subtitle">Sessões independentes</span><button id="labels-button" class="header-button">Etiquetas</button><button id="templates-button" class="templates-button">Modelos</button><button id="campaigns-button" class="header-button">Campanhas</button><button id="dispatch-history-button" class="header-button">Histórico</button><button id="dispatch-button" class="header-button dispatch-header-button">Disparos</button><button id="backup-button" class="header-button" title="Salvar a conversa aberta com áudios">Backup</button><div class="zoom-controls"><button id="zoom-out" title="Diminuir zoom">−</button><button id="zoom-label" title="Restaurar zoom">100%</button><button id="zoom-in" title="Aumentar zoom">+</button></div></header>
+    <header><span class="logo">◉</span><strong>Central WhatsApp Web</strong><span class="subtitle">Sessões independentes</span><button id="templates-button" class="templates-button">Modelos</button><button id="campaigns-button" class="header-button">Campanhas</button><button id="dispatch-history-button" class="header-button">Histórico</button><button id="dispatch-button" class="header-button dispatch-header-button">Disparos</button><button id="backup-button" class="header-button" title="Salvar a conversa aberta com áudios">Backup</button><div class="zoom-controls"><button id="zoom-out" title="Diminuir zoom">−</button><button id="zoom-label" title="Restaurar zoom">100%</button><button id="zoom-in" title="Aumentar zoom">+</button></div></header>
     <aside>
       <div class="aside-title">SEUS NÚMEROS</div>
+      <button id="global-search-button" class="global-search-button" type="button"><span aria-hidden="true">⌕</span> Pesquisar em todos</button>
       <nav id="profiles"></nav>
       <button id="add-button" class="add-button">+ Conectar outro número</button>
       <p class="hint">Clique aqui para cada número. Leia o QR Code somente no primeiro acesso de cada sessão.</p>
@@ -33,6 +35,34 @@
         <small>Você pode usar os outros números e acompanhar pelo botão Disparos.</small>
       </div>
     </main>
+    <dialog id="global-search-dialog" class="global-search-dialog">
+      <section>
+        <div class="global-search-heading">
+          <div><h2>Pesquisar em todos os números</h2><p>Localiza nomes, telefones e textos nas conversas disponíveis.</p></div>
+          <button id="global-search-close" class="icon-button" type="button" title="Fechar">×</button>
+        </div>
+        <form id="global-search-form" class="global-search-form">
+          <label for="global-search-query">Nome, telefone ou trecho da mensagem</label>
+          <div class="global-search-field">
+            <input id="global-search-query" maxlength="120" autocomplete="off" placeholder="Ex.: João, 27999991234 ou proposta aprovada" />
+            <button id="global-search-submit" class="primary" type="submit">Pesquisar</button>
+          </div>
+          <fieldset class="global-search-modes">
+            <label><input type="radio" name="global-search-mode" value="quick" checked /><span><strong>Rápida</strong><small>Nomes, telefones e as 120 mensagens mais recentes de cada conversa.</small></span></label>
+            <label><input type="radio" name="global-search-mode" value="complete" /><span><strong>Completa</strong><small>Todo o histórico disponível; a primeira indexação pode demorar.</small></span></label>
+          </fieldset>
+        </form>
+        <div class="global-search-status-row">
+          <p id="global-search-status">Digite o que deseja encontrar.</p>
+          <button id="global-search-cancel" type="button" hidden>Cancelar busca</button>
+        </div>
+        <div class="global-search-index-row">
+          <p id="global-search-index-status">Índice completo ainda não criado.</p>
+          <div><button id="global-search-rebuild" type="button">Reindexar</button><button id="global-search-clear-index" type="button">Apagar índice</button></div>
+        </div>
+        <div id="global-search-results" class="global-search-results"></div>
+      </section>
+    </dialog>
     <dialog id="profile-dialog">
       <form id="profile-form" method="dialog">
         <h2>Novo número</h2>
@@ -330,6 +360,7 @@
     <script src="dispatch-columns.js"></script>
     <script src="message-variants.js"></script>
     <script src="renderer.js"></script>
+    <script src="search.js"></script>
     <script src="history.js"></script>
     <script src="dispatch.js"></script>
     <script src="campaigns.js"></script>
