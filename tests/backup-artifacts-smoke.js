@@ -62,6 +62,53 @@ app.whenReady().then(async () => {
     assert.ok(containsColor(lastImage, 10, 10, 250), 'o último print deve incluir a última mensagem');
     assert.ok(progress.some((item) => item.phase === 'screenshots'));
 
+    // Simula a janela virtualizada do WhatsApp: somente oito mensagens estão
+    // no DOM, embora o histórico tenha 34. A altura não revela o total.
+    await view.webContents.executeJavaScript(`(() => {
+      for (const el of document.querySelectorAll('[data-id]')) {
+        el.setAttribute('data-id', 'MSG' + el.getAttribute('data-id').split('-')[1]);
+      }
+      document.querySelector('[data-id="MSG21"]').setAttribute('data-id', '00112233445566778899AABBCCDDEEFF');
+      const allMessages = [...document.querySelectorAll('[data-id]')].map((el, index) =>
+        (index === 3 ? '<div style="height:850px;background:rgb(181,13,209)">Registro de ligação sem data-id</div>' : '') + el.outerHTML);
+      globalThis.__openedBackupMessages = [];
+      globalThis.WPP = { chat: { getActiveChat: () => ({ id: { _serialized: 'test-chat' } }), openChatAt: async (_chat, id) => {
+        globalThis.__openedBackupMessages.push(id);
+        const index = id.includes('ABEiM0RVZneImaq7zN3u_w') ? 20 : Number(id.split('_MSG')[1]) - 1;
+        // Reproduz o aviso do celular com openChatAt ainda pendente. A tela
+        // recebe as mensagens antes de a promessa de navegação terminar.
+        if (globalThis.__openedBackupMessages.length === 1) {
+          const scroller = document.querySelector('.scroll');
+          scroller.innerHTML = '<button id="phone-history">Clique neste aviso para carregar mensagens mais antigas do seu celular.</button>';
+          globalThis.__phoneHistoryRequests = 0;
+          document.querySelector('#phone-history').onclick = () => { globalThis.__phoneHistoryRequests++; };
+          setTimeout(() => { scroller.innerHTML = allMessages.slice(index, index + 8).join(''); scroller.scrollTop = 0; }, 600);
+          return new Promise(() => {});
+        }
+        await new Promise(resolve => setTimeout(resolve, 350));
+        const scroller = document.querySelector('.scroll');
+        scroller.innerHTML = allMessages.slice(index, index + 8).join('');
+        scroller.scrollTop = 0;
+        return true;
+      } } };
+      document.querySelector('.scroll').innerHTML = allMessages.slice(-8).join('');
+    })()`);
+    const anchoredDirectory = path.join(directory, 'prints-historico-virtualizado');
+    const anchoredProgress = [];
+    const anchoredCount = await withTemporarilyAttachedBrowserView(window, view,
+      { x: 0, y: 0, width: 1000, height: 800 },
+      () => captureWhatsAppConversation(view.webContents, anchoredDirectory, item => anchoredProgress.push(item), {
+        chatId: 'test-chat', messageIds: Array.from({ length: 34 }, (_, index) => index === 20 ? 'false_123456789@lid_ABEiM0RVZneImaq7zN3u_w' : `false_123456789@lid_MSG${index + 1}`), captureDelayMs: 300
+      }), { settleMs: 100 });
+    const anchoredFirst = nativeImage.createFromPath(path.join(anchoredDirectory, '001.png'));
+    const anchoredLast = nativeImage.createFromPath(path.join(anchoredDirectory, `${String(anchoredCount).padStart(3, '0')}.png`));
+    assert.ok(containsColor(anchoredFirst, 250, 10, 10), 'o backup deve buscar a primeira mensagem fora da janela atual do DOM');
+    assert.ok(containsColor(anchoredLast, 10, 10, 250), 'o backup deve alcançar a última mensagem sem pular as intermediárias');
+    assert.equal(anchoredProgress.at(-1).current, 34, 'todas as mensagens do histórico devem estar cobertas');
+    assert.ok(anchoredCount > 2, 'a janela inicial sozinha não pode definir o número de prints');
+    assert.ok(fs.readdirSync(anchoredDirectory).some(file => containsColor(nativeImage.createFromPath(path.join(anchoredDirectory, file)), 181, 13, 209)), 'deve capturar o cartão de chamada entre as mensagens');
+    assert.equal(await view.webContents.executeJavaScript('globalThis.__phoneHistoryRequests'), 0, 'não deve clicar no aviso do celular');
+
     const audioDirectory = path.join(directory, '02-audios');
     fs.mkdirSync(audioDirectory);
     fs.writeFileSync(path.join(audioDirectory, '001-2026-08-05-18-30-45-recebido.ogg'), Buffer.from('audio-test'));

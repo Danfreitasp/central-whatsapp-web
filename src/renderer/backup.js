@@ -73,10 +73,10 @@ async function generateConversationBackup() {
     backupElements.progressBar.style.width = '100%';
     backupElements.progressText.textContent = 'Backup concluído.';
     backupElements.result.className = 'backup-result';
-    backupElements.result.textContent = `${result.messageCount} mensagem(ns), ${result.audioCount} áudio(s) e ${result.screenshotCount} captura(s) foram salvos. ${result.audioFailureCount ? `${result.audioFailureCount} áudio(s) não estavam mais disponíveis.` : ''}`;
+    backupElements.result.textContent = `${result.messageCount} registro(s), ${result.audioCount} áudio(s) e ${result.screenshotCount} captura(s) foram salvos. ${result.callRecordCount ? `${result.callRecordCount} registro(s) de chamada preservados no relatorio-backup.json; os cartões de chamada não são conferidos individualmente nos prints. ` : ''}${result.audioFailureCount ? `${result.audioFailureCount} áudio(s) não puderam ser baixados. Consulte o relatorio-backup.json no ZIP para ver os motivos.` : ''}`;
     backupElements.result.hidden = false;
   } catch (error) {
-    backupElements.progressBar.style.width = '100%';
+    backupElements.progress.hidden = true;
     backupElements.progressText.textContent = 'O backup não foi concluído.';
     backupElements.result.className = 'backup-result error';
     backupElements.result.textContent = error.message || String(error);

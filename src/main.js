@@ -56,11 +56,13 @@ const { normalizeEffectiveTarget, effectiveTargetReached } = require('./dispatch
 const { createWhatsAppUserAgent } = require('./whatsapp-user-agent');
 const { createDistributionQueue } = require('./distribution-queue');
 const { isWhatsAppSendConfirmed } = require('./dispatch-delivery-confirmation');
-const { captureWhatsAppConversation } = require('./whatsapp-conversation-capture');
+const { captureWhatsAppConversation, loadWhatsAppConversationHistory } = require('./whatsapp-conversation-capture');
 const { normalizeGlobalSearchQuery, normalizeGlobalSearchMode, sortGlobalSearchResults } = require('./global-search');
 const { GlobalSearchIndex } = require('./global-search-index');
 const {
-  audioBackupFilename,
+  downloadConversationAudios,
+  conversationCapturePlan,
+  serializeWhatsAppId,
   sanitizeBackupName
 } = require('./conversation-backup');
 const {
@@ -1474,6 +1476,7 @@ async function openGlobalSearchResult(input) {
 
 function publishConversationBackupProgress(payload) {
   if (!window || window.isDestroyed()) return;
+  window.setTitle(payload.phase === 'done' ? 'Central WhatsApp Web' : `Central WhatsApp Web — Backup: ${String(payload.message || 'Preparando…').slice(0, 140)}`);
   window.webContents.send('conversation-backup:progress', payload);
 }
 
@@ -1490,9 +1493,7 @@ function withConversationBackupCancellation(profileId, operation) {
 
 async function extractActiveConversation(view) {
   return view.webContents.executeJavaScript(`(async () => {
-    const serializeId = (value) => {
-      try { return value?.toString?.() || value?._serialized || String(value || ''); } catch { return ''; }
-    };
+    const serializeId = ${serializeWhatsAppId.toString()};
     const activeChat = globalThis.WPP?.chat?.getActiveChat?.();
     if (!activeChat) return { ok: false, error: 'Abra uma conversa no WhatsApp antes de gerar o backup.' };
     const chatId = serializeId(activeChat.id);
@@ -1502,15 +1503,29 @@ async function extractActiveConversation(view) {
     );
     const rawMessages = await Promise.race([
       globalThis.WPP.chat.getMessages(activeChat.id, {
-        count: -1,
-        includeCallMessages: true
+        count: -1
       }),
       new Promise((_, reject) => setTimeout(
         () => reject(new Error('A leitura do histórico excedeu 2 minutos. Tente novamente com a conversa aberta e carregada.')),
         120000
       ))
     ]);
-    const messages = (Array.isArray(rawMessages) ? rawMessages : []).map((message, index) => {
+    // A consulta separada de call logs pode retornar chamadas de outras
+    // conversas. Usa somente os cartões da coleção da conversa ativa.
+    const aliases = new Set([activeChat.id, activeChat.contact?.id, activeChat.contact?.lid, activeChat.contact?.phoneNumber].map(serializeId).filter(Boolean));
+    const inActiveChat = message => {
+      const remote = serializeId(message.id?.remote) || /^(?:true|false)_([^_]+)_/.exec(serializeId(message.id))?.[1];
+      return Boolean(remote && aliases.has(remote));
+    };
+    const stored = activeChat.msgs?.getModelsArray?.() || activeChat.msgs?.models || [];
+    const localCalls = (Array.isArray(stored) ? stored : []).filter(message => message.type === 'call_log' && inActiveChat(message));
+    const unique = new Map();
+    for (const message of [...(Array.isArray(rawMessages) ? rawMessages : []), ...localCalls]) {
+      if (message.type === 'call_log' && !inActiveChat(message)) continue;
+      const id = serializeId(message.id);
+      unique.set(id || ('invalid-' + unique.size), message);
+    }
+    const messages = [...unique.values()].map((message, index) => {
       const id = serializeId(message.id);
       const type = String(message.type || message.mediaData?.type || 'chat').toLowerCase();
       const fromMe = Boolean(message.id?.fromMe ?? message.fromMe);
@@ -1538,6 +1553,14 @@ async function extractActiveConversation(view) {
         isAudio: type === 'ptt' || type === 'audio' || mimetype.toLowerCase().startsWith('audio/')
       };
     }).sort((first, second) => (first.timestampMs - second.timestampMs) || (first.sequence - second.sequence));
+    const invalidIds = messages.filter(message => !['call_log', 'e2e_notification'].includes(message.type) && !/^(true|false)_[^_]+_.+/.test(message.id));
+    if (invalidIds.length) {
+      return { ok: false, error: 'O WhatsApp retornou registros sem um identificador válido. A captura não foi iniciada para evitar um backup incompleto.', diagnostic: {
+        stage: 'history-id', expectedCount: messages.length, invalidIdCount: invalidIds.length,
+        invalidRecordTypes: [...new Set(invalidIds.map(message => message.type))],
+        rawIdFields: [...new Set((Array.isArray(rawMessages) ? rawMessages : []).flatMap(message => message.id && typeof message.id === 'object' ? Object.keys(message.id) : []))]
+      } };
+    }
     return { ok: true, chat: { id: chatId, title }, messages };
   })()`);
 }
@@ -1545,11 +1568,12 @@ async function extractActiveConversation(view) {
 async function downloadConversationAudio(view, messageId) {
   return view.webContents.executeJavaScript(`(async () => {
     try {
-      const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error('Tempo limite excedido')), 60000));
+      let timeoutId;
+      const timeout = new Promise((_, reject) => { timeoutId = setTimeout(() => reject(new Error('Tempo limite excedido')), 60000); });
       const blob = await Promise.race([
         globalThis.WPP.chat.downloadMedia(${JSON.stringify(messageId)}),
         timeout
-      ]);
+      ]).finally(() => clearTimeout(timeoutId));
       const bytes = new Uint8Array(await blob.arrayBuffer());
       const parts = [];
       for (let offset = 0; offset < bytes.length; offset += 0x8000) {
@@ -1584,55 +1608,75 @@ async function createConversationBackup(profileId) {
   try {
     publishConversationBackupProgress({ phase: 'loading', current: 0, total: 0, message: 'Lendo o histórico disponível no WhatsApp…' });
     await withConversationBackupCancellation(profile.id, ensureWhatsAppBridge(view));
-    const extracted = await withConversationBackupCancellation(profile.id, extractActiveConversation(view));
-    if (!extracted?.ok) return { ok: false, error: extracted?.error || 'Não foi possível ler a conversa ativa.' };
+    let extracted = await withConversationBackupCancellation(profile.id, extractActiveConversation(view));
+    if (!extracted?.ok) throw Object.assign(new Error(extracted?.error || 'Não foi possível ler a conversa ativa.'), { diagnostic: extracted?.diagnostic });
     if (!extracted.messages.length) return { ok: false, error: 'A conversa ativa não possui mensagens disponíveis para backup.' };
+    let callRecords, systemRecords, screenshotMessages;
+    let historyLoad;
 
     publishConversationBackupProgress({
       phase: 'history', current: 0, total: 0,
-      message: 'A conversa ficará visível por alguns segundos durante os prints…'
+      message: 'Aguardando o carregamento do histórico antes dos prints…'
     });
     const screenshotCount = await withTemporarilyAttachedBrowserView(
       window,
       view,
       activeViewBounds(),
-      () => captureWhatsAppConversation(
+      async () => {
+        historyLoad = await loadWhatsAppConversationHistory(view.webContents, extracted, () => extractActiveConversation(view), publishConversationBackupProgress, {
+          isCancelled: () => conversationBackupCancellations.has(profile.id)
+        });
+        extracted = historyLoad.conversation;
+        ({ callRecords, systemRecords, screenshotMessages } = conversationCapturePlan(extracted.messages));
+        return captureWhatsAppConversation(
         view.webContents,
         path.join(tempRoot, '01-prints'),
         publishConversationBackupProgress,
-        { isCancelled: () => conversationBackupCancellations.has(profile.id) }
-      ),
+        {
+          isCancelled: () => conversationBackupCancellations.has(profile.id),
+          chatId: extracted.chat.id,
+          messageIds: screenshotMessages.map(message => message.id).filter(Boolean),
+          messageTypes: Object.fromEntries(screenshotMessages.map(message => [message.id, message.type]))
+        }
+        );
+      },
       {
         settleMs: 700,
         shouldRemainAttached: () => !browserViewsSuspended && activeProfileId === profile.id
       }
     );
 
+    const finalHistory = await withConversationBackupCancellation(profile.id, extractActiveConversation(view));
+    if (!finalHistory?.ok || finalHistory.chat.id !== extracted.chat.id) throw new Error('A conversa mudou durante a conferência final do backup.');
+    const expectedIds = new Set(screenshotMessages.map(message => message.id));
+    if (conversationCapturePlan(finalHistory.messages).screenshotMessages.some(message => !expectedIds.has(message.id))) {
+      throw new Error('Novas mensagens apareceram no histórico durante os prints. O ZIP não foi concluído para evitar um backup incompleto. Aguarde o carregamento e tente novamente.');
+    }
+
     const audioMessages = extracted.messages.filter((message) => message.isAudio && message.id);
     const audioDirectory = path.join(tempRoot, '02-audios');
     fs.mkdirSync(audioDirectory, { recursive: true });
-    const audioFiles = [];
-    const audioFailures = [];
-    for (let index = 0; index < audioMessages.length; index += 1) {
-      if (conversationBackupCancellations.has(profile.id)) {
-        throw Object.assign(new Error('Backup cancelado.'), { code: 'backup_cancelled' });
+    const { audioFiles, audioFailures } = await downloadConversationAudios(
+      audioMessages,
+      audioDirectory,
+      messageId => withConversationBackupCancellation(profile.id, downloadConversationAudio(view, messageId)),
+      {
+        isCancelled: () => conversationBackupCancellations.has(profile.id),
+        onProgress: publishConversationBackupProgress
       }
-      const message = audioMessages[index];
-      publishConversationBackupProgress({
-        phase: 'audio', current: index + 1, total: audioMessages.length,
-        message: `Baixando áudio ${index + 1} de ${audioMessages.length}…`
-      });
-      const downloaded = await withConversationBackupCancellation(profile.id, downloadConversationAudio(view, message.id));
-      if (!downloaded?.ok || !downloaded.base64) {
-        audioFailures.push({ messageId: message.id, reason: downloaded?.error || 'Mídia indisponível' });
-        continue;
-      }
-      const mimetype = downloaded.type || message.mimetype;
-      const filename = audioBackupFilename(message, audioFiles.length, mimetype);
-      const data = Buffer.from(downloaded.base64, 'base64');
-      fs.writeFileSync(path.join(audioDirectory, filename), data);
-      audioFiles.push({ messageId: message.id, filename, mimetype, bytes: data.length });
-    }
+    );
+    fs.writeFileSync(path.join(tempRoot, 'relatorio-backup.json'), JSON.stringify({
+      generatedAt: new Date().toISOString(),
+      messageCount: extracted.messages.length,
+      screenshotCount,
+      screenshotMessageCount: screenshotMessages.length,
+      callRecords,
+      systemRecords,
+      historyLoad: { rounds: historyLoad.rounds, initialMessageCount: historyLoad.initialMessageCount, finalMessageCount: extracted.messages.length, scope: 'Histórico disponível no WhatsApp Web após estabilizar o topo; não inclui mensagens indisponíveis no dispositivo conectado.' },
+      callRecordCoverage: 'Registros preservados nesta lista; cartões visíveis podem aparecer nos prints, sem conferência individual por ID.',
+      audioFiles,
+      audioFailures
+    }, null, 2));
 
     publishConversationBackupProgress({ phase: 'compressing', current: 0, total: 0, message: 'Compactando o pacote final…' });
     const zip = new AdmZip();
@@ -1646,14 +1690,34 @@ async function createConversationBackup(profileId) {
       messageCount: extracted.messages.length,
       audioCount: audioFiles.length,
       audioFailureCount: audioFailures.length,
-      screenshotCount
+      screenshotCount,
+      callRecordCount: callRecords.length
     };
   } catch (error) {
     if (error?.code === 'backup_cancelled') return { ok: false, canceled: true };
     console.error('[Central WhatsApp] Falha ao gerar backup da conversa:', error);
+    if (error?.diagnostic) {
+      const diagnosticPath = `${saveResult.filePath}.diagnostico.json`;
+      try {
+        fs.writeFileSync(diagnosticPath, JSON.stringify({
+          generatedAt: new Date().toISOString(),
+          appVersion: app.getVersion(), electronVersion: process.versions.electron,
+          ...error.diagnostic
+        }, null, 2));
+        let failureScreenshotPath = '';
+        if (error.failureScreenshotPath && path.resolve(error.failureScreenshotPath) === path.join(tempRoot, 'falha-captura.png')) {
+          failureScreenshotPath = `${saveResult.filePath}.falha.png`;
+          fs.copyFileSync(error.failureScreenshotPath, failureScreenshotPath);
+        }
+        return { ok: false, error: `${error.message} Diagnóstico técnico salvo em: ${diagnosticPath}${failureScreenshotPath ? ` Captura da falha salva em: ${failureScreenshotPath}` : ''}`, diagnosticPath, failureScreenshotPath };
+      } catch (diagnosticError) {
+        console.warn('[Central WhatsApp] Não foi possível salvar o diagnóstico:', diagnosticError.code);
+      }
+    }
     return { ok: false, error: error?.message || String(error) };
   } finally {
     conversationBackupCancellations.delete(profile.id);
+    if (window && !window.isDestroyed()) window.setTitle('Central WhatsApp Web');
     if (tempRoot.startsWith(path.join(app.getPath('temp'), 'central-conversa-'))) {
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }

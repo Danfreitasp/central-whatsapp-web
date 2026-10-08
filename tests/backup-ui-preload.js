@@ -88,7 +88,7 @@ contextBridge.exposeInMainWorld('centralWhatsApp', {
     progressCallback?.({ phase: 'audio', current: 1, total: 2, message: 'Baixando áudio 1 de 2…' });
     await new Promise((resolve) => setTimeout(resolve, 20));
     progressCallback?.({ phase: 'done', current: 1, total: 1, message: 'Backup concluído.' });
-    return { ok: true, messageCount: 87, audioCount: 2, audioFailureCount: 1, screenshotCount: 4 };
+    return { ok: true, messageCount: 87, audioCount: 2, audioFailureCount: 1, screenshotCount: 4, callRecordCount: 2 };
   },
   cancelConversationBackup: noop
 });

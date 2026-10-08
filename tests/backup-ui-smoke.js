@@ -43,8 +43,11 @@ app.whenReady().then(async () => {
     generateDisabled: false,
     generateText: 'Escolher local e gerar ZIP'
   });
-  assert.match(result.result, /87 mensagem\(ns\), 2 áudio\(s\) e 4 captura\(s\)/);
-  assert.match(result.result, /1 áudio\(s\) não estavam mais disponíveis/);
+  assert.match(result.result, /87 registro\(s\), 2 áudio\(s\) e 4 captura\(s\)/);
+  assert.match(result.result, /1 áudio\(s\) não puderam ser baixados/);
+  assert.match(result.result, /relatorio-backup\.json/);
+  assert.match(result.result, /2 registro\(s\) de chamada preservados/);
+  assert.match(result.result, /não são conferidos individualmente nos prints/);
   assert.equal(result.progress, 'Backup concluído.');
   assert.equal(result.button, 'Backup');
   console.log('backup de conversa exibido com progresso, áudios e capturas');
