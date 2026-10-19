@@ -4,4 +4,6 @@ dist/
 .env
 .env.*
 dev-app-update.yml
+AGENTS.md
+agents.md
 
