@@ -63,7 +63,7 @@ contextBridge.exposeInMainWorld('centralWhatsApp', {
     return {
       ok: true,
       distribution: {
-        id: 'dist-1', campaignId: campaign.id, campaignName: campaign.name, mode: 'pending',
+        id: 'dist-1', campaignId: input.campaignId || '', campaignName: input.campaignId ? campaign.name : input.sourceName, mode: 'pending',
         distributionMode: input.distributionMode,
         startedAt: new Date().toISOString(), finishedAt: '', running: true, paused: false,
         target: input.successTarget, sent: 0, errors: 0, attempted: 0,

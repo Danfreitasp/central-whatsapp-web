@@ -27,6 +27,8 @@ const dispatchElements = {
   validate: document.querySelector('#dispatch-validate'),
   preview: document.querySelector('#dispatch-preview'),
   distribution: document.querySelector('#dispatch-distribution'),
+  singleDistributionOption: document.querySelector('#dispatch-single-distribution-option'),
+  singleDistribution: document.querySelector('#dispatch-single-distribution'),
   distributionCount: document.querySelector('#dispatch-distribution-count'),
   distributionMode: document.querySelector('#dispatch-distribution-mode'),
   distributionProfiles: document.querySelector('#dispatch-distribution-profiles'),
@@ -273,12 +275,16 @@ function selectedDistributionTargets() {
   );
 }
 
+function distributionTarget() {
+  return dispatchCampaignId ? Math.max(1, Number(dispatchElements.limit.value) || dispatchSuccessTarget || 1) : dispatchLeads.length;
+}
+
 function customDistributionQuotasValid() {
   if (!dispatchDistributionMode || dispatchElements.distributionMode.value !== 'custom') return true;
   const targets = selectedDistributionTargets();
   const values = Object.values(targets);
   return values.length > 0 && values.every((value) => value > 0)
-    && values.reduce((sum, value) => sum + value, 0) === Math.max(1, Number(dispatchElements.limit.value) || 1);
+    && values.reduce((sum, value) => sum + value, 0) === distributionTarget();
 }
 
 function updateDistributionSelectionSummary() {
@@ -289,7 +295,7 @@ function updateDistributionSelectionSummary() {
   if (!selected.length) {
     dispatchElements.distributionSummary.textContent = 'Selecione pelo menos um número disponível.';
   } else if (!custom) {
-    const target = Math.max(1, Number(dispatchElements.limit.value) || dispatchSuccessTarget || 1);
+    const target = distributionTarget();
     const base = Math.floor(target / selected.length);
     const extra = target % selected.length;
     const forecast = selected.map((profileId, index) => {
@@ -302,7 +308,7 @@ function updateDistributionSelectionSummary() {
     dispatchElements.distributionSummary.textContent = `Previsão equilibrada · ${forecast.join(' · ')}. As cotas se ajustam automaticamente após falhas ou pausas.`;
     dispatchElements.distributionSummary.classList.remove('dispatch-distribution-summary-warning');
   } else {
-    const target = Math.max(1, Number(dispatchElements.limit.value) || 1);
+    const target = distributionTarget();
     const targets = selectedDistributionTargets();
     const sum = Object.values(targets).reduce((total, value) => total + value, 0);
     dispatchElements.distributionSummary.textContent = sum === target && Object.values(targets).every((value) => value > 0)
@@ -682,6 +688,16 @@ function renderDispatchFailures() {
 
 function updateDispatchWorkflowTabs() {
   const single = dispatchWorkflowMode === 'single';
+  dispatchElements.singleDistributionOption.hidden = !single;
+  if (single) {
+    dispatchSuccessTarget = 0;
+    dispatchDistributionMode = dispatchElements.singleDistribution.checked;
+    dispatchElements.distribution.hidden = !dispatchDistributionMode;
+    dispatchElements.start.textContent = dispatchDistributionMode ? 'Iniciar distribuição' : 'Iniciar disparo';
+    dispatchElements.headingDescription.textContent = dispatchDistributionMode
+      ? 'Distribua o lote avulso entre os números selecionados.'
+      : 'Prepare uma planilha temporária ou cole números para enviar pelo número selecionado.';
+  }
   dispatchElements.workflowSingle.classList.toggle('active', single);
   dispatchElements.workflowCampaign.classList.toggle('active', !single);
   dispatchElements.workflowSingle.setAttribute('aria-selected', String(single));
@@ -690,6 +706,10 @@ function updateDispatchWorkflowTabs() {
 
 function captureSingleDispatchDraft() {
   singleDispatchDraft = {
+    distribute: dispatchElements.singleDistribution.checked,
+    distributionProfileIds: selectedDistributionProfileIds(),
+    distributionTargets: selectedDistributionTargets(),
+    distributionMode: dispatchElements.distributionMode.value,
     source: dispatchSource,
     rows: dispatchRows,
     phoneColumn: dispatchPhoneColumn,
@@ -723,6 +743,7 @@ function restoreSingleDispatchDraft() {
   dispatchElements.limit.disabled = false;
 
   const draft = singleDispatchDraft;
+  dispatchElements.singleDistribution.checked = Boolean(draft?.distribute);
   if (draft) {
     dispatchSource = draft.source;
     dispatchRows = draft.rows;
@@ -759,6 +780,16 @@ function restoreSingleDispatchDraft() {
   dispatchElements.sourceSheet.setAttribute('aria-selected', String(sheet));
   dispatchElements.sourceManual.setAttribute('aria-selected', String(!sheet));
   updateDispatchWorkflowTabs();
+  if (draft?.distribute) {
+    dispatchElements.distributionMode.value = draft.distributionMode || 'balanced';
+    renderDistributionProfileSelector();
+    for (const checkbox of dispatchElements.distributionProfiles.querySelectorAll('input[type="checkbox"]')) {
+      checkbox.checked = !checkbox.disabled && (draft.distributionProfileIds || []).includes(checkbox.value);
+      const quota = checkbox.closest('label').querySelector('.dispatch-distribution-quota');
+      quota.value = String(draft.distributionTargets?.[checkbox.value] || 0);
+    }
+    updateDistributionSelectionSummary();
+  }
   refreshDispatchVariantAssignments();
   populateDispatchMessagePreview();
   updateDispatchButtons();
@@ -865,6 +896,7 @@ function updateDispatchButtons() {
   const workflowLocked = dispatchRunning || activeDistributions.some((item) => item.running);
   dispatchElements.workflowSingle.disabled = workflowLocked;
   dispatchElements.workflowCampaign.disabled = workflowLocked;
+  dispatchElements.singleDistribution.disabled = workflowLocked;
   dispatchElements.validate.textContent = dispatchSource === 'sheet' ? 'Validar planilha' : 'Validar lista';
   dispatchElements.validate.disabled = dispatchRunning || !dispatchHasInput();
   dispatchElements.start.disabled = dispatchRunning || !dispatchLeads.length || !dispatchHasValidMessage()
@@ -1078,6 +1110,7 @@ async function continueDispatchInBackground() {
 async function selectDispatchFile() {
   const file = dispatchElements.file.files?.[0];
   dispatchDistributionMode = false;
+  dispatchElements.singleDistribution.checked = false;
   focusedDistributionId = '';
   dispatchElements.dialog.classList.remove('campaign-loaded');
   dispatchElements.distribution.hidden = true;
@@ -1146,6 +1179,7 @@ function validateDispatchInput() {
   dispatchElements.campaignResult.textContent = '';
   refreshDispatchVariantAssignments();
   populateDispatchMessagePreview();
+  if (dispatchDistributionMode) renderDistributionProfileSelector();
   setDispatchStatus(
     result.leads.length ? 'Telefones validados. Confira a mensagem e inicie.' : 'Nenhum telefone válido foi encontrado.'
   );
@@ -1323,7 +1357,8 @@ async function startCentralDispatch() {
 
 async function startCentralDistribution() {
   const profileIds = selectedDistributionProfileIds();
-  if (!profileIds.length || !dispatchCampaignId) return;
+  if (!profileIds.length || !dispatchLeads.length) return;
+  dispatchSuccessTarget = distributionTarget();
   saveDispatchPreferences();
   dispatchElements.log.replaceChildren();
   dispatchFailures = [];
@@ -1333,6 +1368,7 @@ async function startCentralDistribution() {
   try {
     const response = await window.centralWhatsApp.startDistribution({
       campaignId: dispatchCampaignId,
+      sourceName: dispatchCampaignId ? '' : (dispatchCampaignImportMeta?.sourceName || 'Lista avulsa'),
       mode: dispatchCampaignMode,
       profileIds,
       distributionMode: dispatchElements.distributionMode.value,
@@ -1354,8 +1390,8 @@ async function startCentralDistribution() {
     dispatchElements.dialog.classList.add('distribution-running');
     renderDistributionDashboard();
     updateDispatchHeader();
-    setDispatchStatus(`Distribuição iniciada em ${profileIds.length} número(s). A meta é compartilhada e as falhas serão repostas.`, 0, dispatchSuccessTarget);
-    addDispatchLog(`Campanha distribuída entre: ${response.distribution.workers.map((worker) => worker.profileName).join(', ')}.`, 'ok');
+    setDispatchStatus(`Distribuição iniciada em ${profileIds.length} número(s). ${dispatchCampaignId ? 'A meta é compartilhada e as falhas serão repostas.' : 'Cada contato do lote será tentado uma vez.'}`, 0, dispatchSuccessTarget);
+    addDispatchLog(`Lote distribuído entre: ${response.distribution.workers.map((worker) => worker.profileName).join(', ')}.`, 'ok');
   } catch (error) {
     dispatchRunning = false;
     addDispatchLog(error.message || String(error), 'error');
@@ -1373,6 +1409,7 @@ async function scheduleCentralDispatch() {
     type: dispatchDistributionMode ? 'distribution' : 'single',
     profileId: dispatchDistributionMode ? scheduledProfileIds[0] : activeProfileId,
     profileIds: scheduledProfileIds,
+    sourceName: dispatchCampaignId ? '' : (dispatchCampaignImportMeta?.sourceName || 'Lista avulsa'),
     scheduledAt: scheduledAt.toISOString(),
     leads: dispatchLeadsWithMessages(),
     template: dispatchUsesVariants() ? selectedDispatchVariants()[0].body : dispatchElements.message.value,
@@ -1384,7 +1421,7 @@ async function scheduleCentralDispatch() {
     mode: dispatchCampaignMode,
     distributionMode: dispatchDistributionMode ? dispatchElements.distributionMode.value : 'balanced',
     profileTargets: dispatchDistributionMode ? selectedDistributionTargets() : {},
-    successTarget: dispatchSuccessTarget
+    successTarget: dispatchDistributionMode ? distributionTarget() : dispatchSuccessTarget
   });
   if (!response?.ok) {
     addDispatchLog(response?.error || 'Não foi possível criar o agendamento.', 'error');
@@ -1456,6 +1493,10 @@ dispatchElements.variantCount.onchange = () => {
   saveDispatchPreferences();
 };
 dispatchElements.distributionMode.onchange = updateDistributionSelectionSummary;
+dispatchElements.singleDistribution.onchange = () => {
+  updateDispatchWorkflowTabs();
+  renderDistributionProfileSelector();
+};
 dispatchElements.senderName.oninput = () => { renderDispatchMessagePreview(); saveDispatchPreferences(); };
 dispatchElements.delay.onchange = saveDispatchPreferences;
 dispatchElements.jitter.onchange = saveDispatchPreferences;

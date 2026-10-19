@@ -2532,10 +2532,9 @@ function startDispatchInternal(input, requestedProfileId) {
 }
 
 function startDistributionInternal(input) {
-  if (!campaignStore) return { ok: false, error: 'O gerenciador de campanhas ainda não está pronto.' };
   const campaignId = String(input?.campaignId || '').trim().slice(0, 80);
-  if (!campaignId) return { ok: false, error: 'Selecione uma campanha para distribuir.' };
-  if ([...dispatchStates.values()].some((state) => state.running && state.campaignId === campaignId)) {
+  if (campaignId && !campaignStore) return { ok: false, error: 'O gerenciador de campanhas ainda não está pronto.' };
+  if (campaignId && [...dispatchStates.values()].some((state) => state.running && state.campaignId === campaignId)) {
     return { ok: false, error: 'Esta campanha já possui um disparo em andamento.' };
   }
 
@@ -2554,12 +2553,21 @@ function startDistributionInternal(input) {
   const mode = input?.mode === 'errors' ? 'errors' : 'pending';
   let campaignSelection;
   try {
-    campaignSelection = campaignStore.contactsForDispatch(campaignId, mode, MAX_DISPATCH_CONTACTS);
+    if (campaignId) campaignSelection = campaignStore.contactsForDispatch(campaignId, mode, MAX_DISPATCH_CONTACTS);
+    else {
+      const unique = new Map();
+      for (const rawLead of (Array.isArray(input?.leads) ? input.leads : []).slice(0, MAX_DISPATCH_CONTACTS)) {
+        const lead = parseDispatchLead(rawLead, unique.size);
+        const phone = formatDispatchPhone(lead.phone);
+        if (!unique.has(phone)) unique.set(phone, lead);
+      }
+      campaignSelection = { campaign: { name: String(input?.sourceName || 'Lote avulso').slice(0, 100) }, leads: [...unique.values()] };
+    }
   } catch (error) {
     return { ok: false, error: error.message || String(error) };
   }
   if (!campaignSelection.leads.length) {
-    return { ok: false, error: mode === 'errors' ? 'A campanha não possui erros para tentar novamente.' : 'A campanha não possui contatos pendentes.' };
+    return { ok: false, error: !campaignId ? 'A lista de telefones está vazia.' : mode === 'errors' ? 'A campanha não possui erros para tentar novamente.' : 'A campanha não possui contatos pendentes.' };
   }
 
   const messageAssignments = new Map();
@@ -2582,7 +2590,7 @@ function startDistributionInternal(input) {
       messageTemplateName: assigned.messageTemplateName
     };
   });
-  const target = Math.max(1, Math.min(leads.length, Number(input?.successTarget) || 50));
+  const target = Math.max(1, Math.min(leads.length, campaignId ? Number(input?.successTarget) || 50 : leads.length));
   const distributionMode = input?.distributionMode === 'custom' ? 'custom' : 'balanced';
   const profileTargets = {};
   if (distributionMode === 'custom') {
@@ -2723,8 +2731,7 @@ ipcMain.handle('dispatch:schedule', (_event, input) => {
   const distributionMode = input?.distributionMode === 'custom' ? 'custom' : 'balanced';
   const profileTargets = {};
   if (scheduleType === 'distribution') {
-    if (!campaignId) return { ok: false, error: 'Selecione uma campanha para agendar a distribuição.' };
-    scheduledSuccessTarget = Math.max(1, Math.min(leads.length, successTarget || 50));
+    scheduledSuccessTarget = Math.max(1, Math.min(leads.length, campaignId ? successTarget || 50 : leads.length));
     if (distributionMode === 'custom') {
       for (const profileId of requestedProfileIds) {
         profileTargets[profileId] = Math.max(0, Number(input?.profileTargets?.[profileId]) || 0);
@@ -2753,6 +2760,7 @@ ipcMain.handle('dispatch:schedule', (_event, input) => {
       delaySec: Math.min(120, Math.max(3, Number(input?.delaySec) || 12)),
       jitter: input?.jitter !== false,
       campaignId,
+      sourceName: String(input?.sourceName || 'Lote avulso').slice(0, 100),
       successTarget: scheduledSuccessTarget,
       ...(scheduleType === 'distribution' ? {
         mode: input?.mode === 'errors' ? 'errors' : 'pending',
