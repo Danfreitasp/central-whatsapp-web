@@ -2,6 +2,24 @@
 
 Use várias contas do WhatsApp Web em uma única janela, com sessões independentes.
 
+## Exemplos de funcionalidades
+
+**Sessões independentes:** acompanhe vários números e os envios ativos.
+
+![Vários números e envios ativos](assets/readme/multiplas-sessoes.png)
+
+**Campanhas:** acompanhe listas, envios e erros e prepare uma distribuição.
+
+![Gerenciador de campanhas](assets/readme/campanhas.png)
+
+**Distribuição:** divida uma lista entre números automaticamente ou defina cotas.
+
+![Distribuição de uma lista entre números](assets/readme/distribuicao-lista.png)
+
+**Pesquisa global:** encontre nomes, telefones e mensagens em vários números.
+
+![Pesquisa global de conversas](assets/readme/pesquisa-global.png)
+
 ## Para usuários
 
 - [Baixar a versão 0.10.31 para Windows x64](https://github.com/Danfreitasp/central-whatsapp-web-updates/releases/download/v0.10.31/Central-WhatsApp-Web-Setup-0.10.31.exe)
