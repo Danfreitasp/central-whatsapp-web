@@ -22,7 +22,7 @@ app.whenReady().then(async () => {
     return {
       wasOpen,
       dialogClosed: !document.querySelector('#templates-dialog').open,
-      activeText: document.querySelector('.profile.active .profile-select span')?.textContent
+      activeText: document.querySelector('.profile.active .profile-name')?.textContent
     };
   })()`);
   assert.deepEqual(result, { wasOpen: true, dialogClosed: true, activeText: 'Telefone Azul' });

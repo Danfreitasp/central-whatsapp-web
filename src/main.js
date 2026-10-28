@@ -25,6 +25,8 @@ const {
 const { normalizeDispatchFailures, createDispatchFailuresCsv } = require('./dispatch-failures');
 const { MAX_DISPATCH_HISTORY, mergeDispatchHistory, filterDispatchHistory, createDispatchHistoryCsv } = require('./dispatch-history');
 const { preloadProfiles } = require('./profile-preload');
+const { createOwnPhoneRuntimeSource } = require('./whatsapp-own-phone');
+const { normalizePhone: normalizeProfilePhone } = require('./renderer/profile-phone');
 const { applySemNomeVariantsMigration } = require('./template-migrations');
 const { normalizeMessageVariants, createSuccessfulVariantRotation } = require('./message-variant-rotation');
 const { createApplicationMenuTemplate } = require('./application-menu');
@@ -244,6 +246,100 @@ function loadProfiles() {
 
 function saveProfiles() {
   fs.writeFileSync(configPath(), JSON.stringify(profiles, null, 2), 'utf8');
+}
+
+function validateProfilePhone(value) {
+  const raw = String(value ?? '').trim();
+  if (!raw) return '';
+  const phone = normalizeProfilePhone(raw);
+  if (!phone) throw new Error('Informe um telefone válido com DDD.');
+  return phone;
+}
+
+const profilePhoneQueue = [];
+let profilePhoneSyncTimer = null;
+let profilePhoneSyncing = false;
+
+function needsProfilePhone(profile) {
+  return Boolean(profile) && !profile.phone && profile.phoneSource !== 'manual';
+}
+
+function scheduleProfilePhoneSync(delay, { force = false } = {}) {
+  if (profilePhoneSyncing) return;
+  if (profilePhoneSyncTimer) {
+    if (!force) return;
+    clearTimeout(profilePhoneSyncTimer);
+  }
+  profilePhoneSyncTimer = setTimeout(() => {
+    profilePhoneSyncTimer = null;
+    void runProfilePhoneSync();
+  }, delay);
+  profilePhoneSyncTimer.unref?.();
+}
+
+function queueProfilePhoneSync(profileId, { immediate = false } = {}) {
+  const profile = profiles.find((item) => item.id === profileId);
+  if (!needsProfilePhone(profile)) return;
+  const queuedAt = profilePhoneQueue.indexOf(profileId);
+  if (queuedAt >= 0) {
+    if (!immediate) return;
+    profilePhoneQueue.splice(queuedAt, 1);
+  }
+  if (immediate) profilePhoneQueue.unshift(profileId);
+  else profilePhoneQueue.push(profileId);
+  scheduleProfilePhoneSync(immediate ? 400 : 3000, { force: immediate });
+}
+
+async function runProfilePhoneSync() {
+  if (profilePhoneSyncing || !profilePhoneQueue.length) return;
+  profilePhoneSyncing = true;
+  const profileId = profilePhoneQueue.shift();
+  try {
+    await syncProfilePhone(profileId);
+  } catch (error) {
+    console.warn('[Central WhatsApp] Não foi possível detectar o telefone do perfil:', error.message);
+  } finally {
+    profilePhoneSyncing = false;
+    if (profilePhoneQueue.length) scheduleProfilePhoneSync(2000);
+  }
+}
+
+async function syncProfilePhone(profileId) {
+  const profile = profiles.find((item) => item.id === profileId);
+  if (!needsProfilePhone(profile)) return;
+  const view = createView(profile);
+  if (!view || view.webContents.isDestroyed() || view.webContents.isLoading()) return;
+  // Evita injetar a integração em páginas que claramente não são o WhatsApp Web.
+  if (!/whatsapp/i.test(view.webContents.getTitle() || '')) return;
+  // Só tenta ler o número quando a sessão já saiu da tela de QR Code/login.
+  let authenticatedSurface = false;
+  try {
+    authenticatedSurface = await view.webContents.executeJavaScript(
+      `Boolean(document.querySelector('#pane-side') || document.querySelector('[data-testid="chat-list"]') || document.querySelector('[aria-label="Lista de conversas"]'))`
+    );
+  } catch {
+    return;
+  }
+  if (!authenticatedSurface) return;
+  try {
+    await ensureWhatsAppBridge(view, 12000);
+  } catch {
+    return;
+  }
+  if (!needsProfilePhone(profiles.find((item) => item.id === profileId))) return;
+  let digits = '';
+  try {
+    digits = await view.webContents.executeJavaScript(createOwnPhoneRuntimeSource());
+  } catch {
+    return;
+  }
+  const phone = normalizeProfilePhone(digits);
+  const current = profiles.find((item) => item.id === profileId);
+  if (!phone || !current || !needsProfilePhone(current)) return;
+  current.phone = phone;
+  current.phoneSource = 'auto';
+  saveProfiles();
+  if (window && !window.isDestroyed()) window.webContents.send('profiles:updated', profileForPublic(current));
 }
 
 function loadTemplates() {
@@ -468,7 +564,7 @@ function syncLabelsToView(profileId) {
 }
 
 function profileForPublic(profile) {
-  return { id: profile.id, name: profile.name, color: profile.color, zoom: profile.zoom || 1, unread: unreadByProfile.get(profile.id) || 0, active: profile.id === activeProfileId };
+  return { id: profile.id, name: profile.name, phone: profile.phone || '', color: profile.color, zoom: profile.zoom || 1, unread: unreadByProfile.get(profile.id) || 0, active: profile.id === activeProfileId };
 }
 
 function unreadFromTitle(title) {
@@ -703,6 +799,7 @@ function setActiveProfile(id) {
   if (isProfileDispatchLocked(id) && activeProfileId !== id) return;
   activeProfileId = id;
   profileSwitchRevision += 1;
+  queueProfilePhoneSync(id, { immediate: true });
   const revision = profileSwitchRevision;
   if (browserViewsSuspended) return;
 
@@ -2199,12 +2296,14 @@ function createView(profile) {
   view.webContents.on('page-title-updated', (_event, title) => {
     const unread = unreadFromTitle(title);
     publishUnread(profile.id, unread);
+    queueProfilePhoneSync(profile.id);
   });
   view.webContents.once('did-finish-load', () => {
     syncSessionResourcePolicy();
     publishUnread(profile.id, unreadFromTitle(view.webContents.getTitle()), { allowNotification: false });
     notificationReadyProfiles.add(profile.id);
     syncLabelsToView(profile.id);
+    queueProfilePhoneSync(profile.id, { immediate: profile.id === activeProfileId });
   });
   view.webContents.on('unresponsive', () => {
     recordSurfaceEvent('renderer-unresponsive', view);
@@ -2879,13 +2978,21 @@ ipcMain.handle('profiles:add', (_event, input) => {
   const name = String(input?.name || '').trim();
   const color = /^#[0-9a-f]{6}$/i.test(input?.color || '') ? input.color : '#00a884';
   if (!name) throw new Error('Informe um nome para o número.');
+  const phone = validateProfilePhone(input?.phone);
 
   const profile = { id: crypto.randomUUID(), name, color, zoom: 1 };
+  if (phone) {
+    profile.phone = phone;
+    profile.phoneSource = 'manual';
+  } else {
+    profile.phoneSource = 'auto';
+  }
   profiles.push(profile);
   saveProfiles();
   browserViewsSuspended = false;
   createView(profile);
   setActiveProfile(profile.id);
+  queueProfilePhoneSync(profile.id, { immediate: true });
   return { profiles: profiles.map(profileForPublic), activeProfileId };
 });
 ipcMain.handle('profiles:select', (_event, id) => {
@@ -2916,7 +3023,15 @@ ipcMain.handle('profiles:rename', (_event, input) => {
   if (!name) throw new Error('Informe um nome para o número.');
   if (name.length > 40) throw new Error('O nome pode ter no máximo 40 caracteres.');
   profile.name = name;
+  if (Object.prototype.hasOwnProperty.call(input || {}, 'phone')) {
+    const phone = validateProfilePhone(input.phone);
+    if (phone !== (profile.phone || '')) {
+      profile.phone = phone;
+      profile.phoneSource = phone ? 'manual' : 'auto';
+    }
+  }
   saveProfiles();
+  if (needsProfilePhone(profile)) queueProfilePhoneSync(profile.id, { immediate: true });
   return profiles.map(profileForPublic);
 });
 ipcMain.handle('profiles:reorder', (_event, input) => {

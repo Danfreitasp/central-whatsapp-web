@@ -67,6 +67,7 @@
       <form id="profile-form" method="dialog">
         <h2>Novo número</h2>
         <label>Identificação<input id="name" maxlength="40" placeholder="Ex.: Comercial" required autofocus /></label>
+        <label><span>Telefone <small>(opcional)</small></span><input id="phone" maxlength="20" inputmode="tel" placeholder="(27) 99999-9999" /></label>
         <label>Cor<input id="color" type="color" value="#00a884" /></label>
         <div class="actions"><button type="button" id="cancel">Cancelar</button><button type="submit" class="primary">Adicionar</button></div>
       </form>
@@ -75,6 +76,7 @@
       <form id="rename-form" method="dialog">
         <h2>Editar identificação</h2>
         <label>Nome do número<input id="rename-name" maxlength="40" required autofocus /></label>
+        <label><span>Telefone <small>(em branco detecta automaticamente)</small></span><input id="rename-phone" maxlength="20" inputmode="tel" placeholder="(27) 99999-9999" /></label>
         <div class="actions"><button type="button" id="rename-cancel">Cancelar</button><button type="submit" class="primary">Salvar</button></div>
       </form>
     </dialog>
@@ -361,6 +363,7 @@
       </section>
     </dialog>
     <script src="../vendor/xlsx.full.min.js"></script>
+    <script src="profile-phone.js"></script>
     <script src="dispatch-columns.js"></script>
     <script src="message-variants.js"></script>
     <script src="renderer.js"></script>

@@ -22,7 +22,7 @@ Use várias contas do WhatsApp Web em uma única janela, com sessões independen
 
 ## Para usuários
 
-- [Baixar a versão 0.10.31 para Windows x64](https://github.com/Danfreitasp/central-whatsapp-web-updates/releases/download/v0.10.31/Central-WhatsApp-Web-Setup-0.10.31.exe)
+- [Baixar a versão 0.10.32 para Windows x64](https://github.com/Danfreitasp/central-whatsapp-web-updates/releases/download/v0.10.32/Central-WhatsApp-Web-Setup-0.10.32.exe)
 - [Ver outras versões](https://github.com/Danfreitasp/central-whatsapp-web-updates/releases)
 - Organize números, conversas, modelos de mensagem e histórico em um só lugar.
 - Envie listas ou planilhas por um número ou distribua os contatos entre vários números.

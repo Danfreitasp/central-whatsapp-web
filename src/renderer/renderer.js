@@ -26,6 +26,12 @@ function activeProfile() {
   return profiles.find((profile) => profile.id === activeProfileId);
 }
 
+function formatProfilePhone(phone) {
+  const digits = String(phone || '').replace(/\D/g, '');
+  if (!digits) return '';
+  return window.ProfilePhone?.formatPhone(digits) || `+${digits}`;
+}
+
 function renderZoom() {
   const profile = activeProfile();
   const zoom = profile?.zoom || 1;
@@ -223,7 +229,10 @@ function render() {
     row.draggable = !sending;
     const badge = profile.unread ? `<b class="unread">${profile.unread > 99 ? '99+' : profile.unread}</b>` : '';
     const sendingBadge = sending ? '<em class="sending-badge">Em lote</em>' : '';
-    row.innerHTML = `<button class="profile-select" title="${sending ? 'Acompanhar, pausar ou parar este lote' : `Abrir ${profile.name}`}"><i style="background:${profile.color}"></i><span>${profile.name}</span>${badge}${sendingBadge}</button><button class="rename" title="Editar identificação" aria-label="Editar ${profile.name}">✎</button><button class="remove" title="Remover perfil" aria-label="Remover ${profile.name}">×</button>`;
+    const phone = formatProfilePhone(profile.phone);
+    const phoneLine = phone ? `<small class="profile-phone">${phone}</small>` : '';
+    const label = phone ? `${profile.name} — ${phone}` : profile.name;
+    row.innerHTML = `<button class="profile-select" title="${sending ? 'Acompanhar, pausar ou parar este lote' : `Abrir ${label}`}"><i style="background:${profile.color}"></i><span class="profile-text"><span class="profile-name">${profile.name}</span>${phoneLine}</span>${badge}${sendingBadge}</button><button class="rename" title="Editar identificação" aria-label="Editar ${profile.name}">✎</button><button class="remove" title="Remover perfil" aria-label="Remover ${profile.name}">×</button>`;
     row.querySelector('.profile-select').disabled = false;
     row.querySelector('.rename').disabled = sending;
     row.querySelector('.remove').disabled = sending;
@@ -243,6 +252,7 @@ function render() {
     row.querySelector('.rename').onclick = async () => {
       profileToRenameId = profile.id;
       document.querySelector('#rename-name').value = profile.name;
+      document.querySelector('#rename-phone').value = formatProfilePhone(profile.phone);
       await window.centralWhatsApp.beginAdd();
       renameDialog.showModal();
     };
@@ -314,10 +324,18 @@ document.querySelector('#rename-cancel').onclick = async () => {
 renameDialog.addEventListener('cancel', () => window.centralWhatsApp.cancelAdd());
 renameForm.onsubmit = async (event) => {
   event.preventDefault();
-  profiles = await window.centralWhatsApp.renameProfile({ id: profileToRenameId, name: document.querySelector('#rename-name').value });
-  renameDialog.close();
-  await window.centralWhatsApp.cancelAdd();
-  render();
+  try {
+    profiles = await window.centralWhatsApp.renameProfile({
+      id: profileToRenameId,
+      name: document.querySelector('#rename-name').value,
+      phone: document.querySelector('#rename-phone').value
+    });
+    renameDialog.close();
+    await window.centralWhatsApp.cancelAdd();
+    render();
+  } catch (error) {
+    alert(error.message || 'Não foi possível salvar a identificação.');
+  }
 };
 document.querySelector('#templates-button').onclick = openTemplates;
 document.querySelector('#templates-close').onclick = closeTemplates;
@@ -348,13 +366,21 @@ zoomIn.onclick = () => changeZoom((activeProfile()?.zoom || 1) + 0.1);
 zoomLabel.onclick = () => changeZoom(1);
 form.onsubmit = async (event) => {
   event.preventDefault();
-  const result = await window.centralWhatsApp.addProfile({ name: document.querySelector('#name').value, color: document.querySelector('#color').value });
-  profiles = result.profiles;
-  activeProfileId = result.activeProfileId;
-  form.reset();
-  dialog.close();
-  await window.centralWhatsApp.cancelAdd();
-  render();
+  try {
+    const result = await window.centralWhatsApp.addProfile({
+      name: document.querySelector('#name').value,
+      phone: document.querySelector('#phone').value,
+      color: document.querySelector('#color').value
+    });
+    profiles = result.profiles;
+    activeProfileId = result.activeProfileId;
+    form.reset();
+    dialog.close();
+    await window.centralWhatsApp.cancelAdd();
+    render();
+  } catch (error) {
+    alert(error.message || 'Não foi possível adicionar o número.');
+  }
 };
 
 window.centralWhatsApp.listProfiles().then((items) => {
@@ -375,5 +401,11 @@ window.centralWhatsApp.onUnreadChanged(({ profileId, unread }) => {
   const profile = profiles.find((item) => item.id === profileId);
   if (!profile) return;
   profile.unread = unread;
+  render();
+});
+window.centralWhatsApp.onProfileUpdated?.((updated) => {
+  const index = profiles.findIndex((item) => item.id === updated?.id);
+  if (index < 0) return;
+  profiles[index] = { ...profiles[index], ...updated };
   render();
 });

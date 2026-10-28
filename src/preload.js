@@ -51,6 +51,7 @@ contextBridge.exposeInMainWorld('centralWhatsApp', {
   reorderProfiles: (input) => ipcRenderer.invoke('profiles:reorder', input),
   removeProfile: (id) => ipcRenderer.invoke('profiles:remove', id),
   onUnreadChanged: (callback) => ipcRenderer.on('profiles:unread-changed', (_event, data) => callback(data)),
+  onProfileUpdated: (callback) => ipcRenderer.on('profiles:updated', (_event, data) => callback(data)),
   onProfileActivated: (callback) => ipcRenderer.on('profiles:activated', (_event, data) => callback(data)),
   onGlobalSearchProgress: (callback) => ipcRenderer.on('global-search:progress', (_event, data) => callback(data)),
   onDispatchProgress: (callback) => ipcRenderer.on('dispatch:progress', (_event, data) => callback(data)),
